@@ -703,20 +703,266 @@ SeceoKnight-backend/
 
 # What's Next — SIEM Dashboard Server
 
-The security backend is now fully operational. The next phase is building the **SIEM Dashboard** — a separate server that connects to the security server via REST API and WebSocket to display:
+The security backend is now fully operational. The next phase is building the **SIEM Dashboard** — a separate server that connects to the security server via REST API and WebSocket.
 
-- Real-time threat alerts
-- Network activity log
-- Blocklist management (add/remove rules)
-- Endpoint monitor
-- AI detection results
-- Statistics and charts
+---
 
-**Dashboard connects to:**
-- `GET  http://192.168.1.189/api/events` — event log
-- `GET  http://192.168.1.189/api/stats` — statistics
-- `GET/POST/DELETE http://192.168.1.189/api/blocklist` — policy management
-- `GET  http://192.168.1.189/api/endpoints` — endpoint monitor
-- `WS   ws://192.168.1.189/ws/alerts` — live alerts (WebSocket)
+## Dashboard API Reference
 
-Full API documentation: [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
+All requests go to `http://192.168.1.189` (via Nginx on port 80).
+Replace with `http://192.168.1.189:5001` for direct access during development.
+
+---
+
+### 🔒 Blocklist — Block & Unblock Websites
+
+#### List all active rules
+```http
+GET /api/blocklist
+```
+Response:
+```json
+[
+  {"id": 1, "rule_type": "host", "rule_value": "facebook.com", "description": "Social media", "is_active": 1, "created_at": "2024-01-01T10:00:00"},
+  {"id": 2, "rule_type": "regex", "rule_value": ".*torrent.*", "description": "Torrent sites", "is_active": 1}
+]
+```
+
+List ALL rules including inactive (for restore UI):
+```http
+GET /api/blocklist?active_only=false
+```
+
+#### Block a website (add rule)
+```http
+POST /api/blocklist
+Content-Type: application/json
+
+{"rule_type": "host", "rule_value": "facebook.com", "description": "Social media block"}
+```
+`rule_type` options:
+- `host` — block entire domain: `"facebook.com"`
+- `prefix` — block URL path: `"youtube.com/shorts"`
+- `regex` — block by pattern: `".*gambling.*"`
+- `vid` — block specific YouTube video ID: `"dQw4w9WgXcQ"`
+
+Response `201`:
+```json
+{"message": "Rule added", "rule": {"rule_type": "host", "rule_value": "facebook.com"}}
+```
+Error `409` if rule already exists.
+
+#### Unblock a website (deactivate rule)
+```http
+DELETE /api/blocklist/{id}
+```
+Example — unblock rule ID 1:
+```http
+DELETE /api/blocklist/1
+```
+Response:
+```json
+{"message": "Rule 1 deactivated"}
+```
+> Rule is **deactivated, not deleted** — it can be restored. Endpoints stop blocking within 30 seconds.
+
+#### Re-block a previously unblocked rule
+```http
+PUT /api/blocklist/{id}/restore
+```
+Response:
+```json
+{"message": "Rule 3 restored"}
+```
+
+---
+
+### 📋 Events — Network Activity Log
+
+#### Get events (with filters)
+```http
+GET /api/events
+```
+Query parameters — all optional, combine freely:
+
+| Parameter    | Type    | Example                        | Description                        |
+|---|---|---|---|
+| `limit`      | int     | `?limit=50`                    | Max results (default 100, max 1000)|
+| `offset`     | int     | `?offset=100`                  | Pagination offset                  |
+| `client_ip`  | string  | `?client_ip=192.168.1.105`     | Filter by endpoint IP              |
+| `event_type` | string  | `?event_type=blocked_host`     | Filter by event type               |
+| `blocked`    | bool    | `?blocked=true`                | Only blocked / only allowed        |
+| `host`       | string  | `?host=facebook`               | Search by hostname (partial match) |
+| `from_ts`    | string  | `?from_ts=2024-01-01T00:00:00` | Start datetime (ISO)               |
+| `to_ts`      | string  | `?to_ts=2024-01-31T23:59:59`   | End datetime (ISO)                 |
+
+Response:
+```json
+{
+  "total": 1523,
+  "limit": 100,
+  "offset": 0,
+  "events": [
+    {
+      "id": 99,
+      "timestamp_iso": "2024-01-15T14:23:01",
+      "client_ip": "192.168.1.105",
+      "event_type": "blocked_host",
+      "host": "facebook.com",
+      "url": "https://facebook.com/",
+      "blocked": 1,
+      "block_type": "host",
+      "block_rule": "facebook.com",
+      "threat_level": "High"
+    }
+  ]
+}
+```
+
+Event type values:
+- `blocked_host` — domain blocklist rule matched
+- `blocked_prefix` — URL prefix rule matched
+- `blocked_regex` — regex rule matched
+- `blocked_watch` — YouTube video ID blocked
+- `allowed` — request passed through
+- `ai_phishing` — Chrome extension detected phishing
+- `ai_malware` — Chrome extension detected malware
+
+---
+
+### 📊 Stats — Dashboard Analytics
+
+```http
+GET /api/stats
+```
+Response:
+```json
+{
+  "total_requests": 48291,
+  "blocked_requests": 1204,
+  "allowed_requests": 47087,
+  "ai_detections": 37,
+  "active_endpoints": 12,
+  "top_blocked_hosts": [
+    {"host": "facebook.com", "count": 412},
+    {"host": "instagram.com", "count": 289}
+  ]
+}
+```
+
+---
+
+### 🖥️ Endpoints — Endpoint Monitor
+
+#### List all endpoints
+```http
+GET /api/endpoints
+```
+Response:
+```json
+[
+  {
+    "ip": "192.168.1.105",
+    "hostname": "",
+    "status": "active",
+    "last_seen": "2024-01-15T14:30:00",
+    "total_requests": 2341,
+    "blocked_count": 88
+  }
+]
+```
+
+#### Get one endpoint + its last 50 events
+```http
+GET /api/endpoints/{ip}
+```
+Example:
+```http
+GET /api/endpoints/192.168.1.105
+```
+Response:
+```json
+{
+  "endpoint": {"ip": "192.168.1.105", "status": "active", ...},
+  "recent_events": [...]
+}
+```
+
+---
+
+### 🚨 Alerts — Incident Alerts Tab
+
+Returns only high-severity threat events (blocks + AI detections):
+```http
+GET /api/alerts?limit=50
+```
+Response: same structure as events, filtered to threat event types only.
+
+---
+
+### ⚡ WebSocket — Live Real-Time Alerts
+
+Connect once from the dashboard — threats push instantly with no polling.
+
+```
+ws://192.168.1.189/ws/alerts
+```
+
+Keep-alive (send every 30s):
+```json
+"ping"
+```
+Server replies:
+```json
+{"type": "pong"}
+```
+
+Incoming alert message format:
+```json
+{
+  "type": "alert",
+  "event_type": "blocked_host",
+  "client_ip": "192.168.1.105",
+  "host": "facebook.com",
+  "url": "https://facebook.com/login",
+  "blocked": true,
+  "timestamp": "2024-01-15T14:23:01",
+  "threat_level": "High"
+}
+```
+For AI detections:
+```json
+{
+  "type": "alert",
+  "event_type": "ai_phishing",
+  "url": "https://paypa1-login.com",
+  "confidence": 0.97,
+  "threat_level": "High"
+}
+```
+
+---
+
+### 🤖 AI — Health & Model Status
+
+```http
+GET /health
+```
+```json
+{
+  "status": "healthy",
+  "ai": {
+    "phishing_model": "loaded",
+    "malware_models": {"CNN": "loaded", "ViT": "loaded", "1D-CNN-LSTM": "loaded"}
+  }
+}
+```
+
+```http
+GET /models/status
+```
+Returns just the AI section of `/health`.
+
+---
+
+Full API documentation with all edge cases: [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
