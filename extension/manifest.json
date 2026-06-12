@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "SecEoKnight Security Extension",
+  "version": "1.0.0",
+  "description": "AI-powered phishing and malware detection. Protects users by checking every page against the SecEoKnight security server.",
+
+  "permissions": [
+    "webNavigation",
+    "tabs",
+    "downloads",
+    "storage",
+    "notifications",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "http://192.168.1.189:5001/*",
+    "http://192.168.1.189/*",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SecEoKnight Security",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,30 @@
+[Unit]
+Description=SecEoKnight Unified Security Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ubuntu
+WorkingDirectory=/opt/seceoknight/server
+ExecStart=/opt/seceoknight/venv/bin/uvicorn unified_server:app \
+    --host 0.0.0.0 \
+    --port 5001 \
+    --workers 1 \
+    --log-level info
+# NOTE: Do NOT increase workers above 1.
+# The in-memory WebSocketManager is not shared across processes.
+# Multiple workers = dashboard only receives alerts from 1 worker.
+# Async uvicorn with 1 worker handles 50+ endpoints comfortably.
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=seceoknight
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
