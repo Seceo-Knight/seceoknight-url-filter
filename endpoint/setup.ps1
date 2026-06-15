@@ -28,7 +28,7 @@ $ToServerPath = "$BaseDir\to-server.py"
 
 $MitmInstallerUrl = "https://downloads.mitmproxy.org/10.2.4/mitmproxy-10.2.4-windows-x86_64-installer.exe"
 $NssmUrl          = "https://nssm.cc/release/nssm-2.24.zip"
-$RepoBase         = "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/seceoknight-url-filter/main/endpoint"
+$RepoBase         = "https://raw.githubusercontent.com/Seceo-Knight/seceoknight-url-filter/main/endpoint"
 
 $ServiceProxy  = "SecEoKnight-Proxy"
 $ServiceLogger = "SecEoKnight-Logger"
