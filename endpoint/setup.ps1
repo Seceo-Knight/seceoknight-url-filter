@@ -9,15 +9,15 @@
 #   - Are managed via Windows Services panel (services.msc)
 #
 # Services installed:
-#   SecEoKnight-Proxy   — mitmproxy + agent.py  (URL interception + blocking)
-#   SecEoKnight-Logger  — to-server.py           (log forwarding to server)
+#   SecEoKnight-Proxy   -- mitmproxy + agent.py  (URL interception + blocking)
+#   SecEoKnight-Logger  -- to-server.py           (log forwarding to server)
 #
 # Run as Administrator on each endpoint.
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
 
-# ── Configuration ──────────────────────────────────────────────────────────────
+# -- Configuration --------------------------------------------------------------
 $ServerIP     = "192.168.1.189"      # <-- Change if your server IP is different
 $ServerPort   = 5001
 $ProxyPort    = 8082
@@ -34,14 +34,14 @@ $ServiceProxy  = "SecEoKnight-Proxy"
 $ServiceLogger = "SecEoKnight-Logger"
 $MaxWait       = 600
 $ScanInterval  = 5
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 function Write-Ok($msg)   { Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Write-Err($msg)  { Write-Host "  [ERROR] $msg" -ForegroundColor Red }
 function Write-Warn($msg) { Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 
-# ── Require Administrator ──────────────────────────────────────────────────────
+# -- Require Administrator ------------------------------------------------------
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Err "This script must be run as Administrator."
@@ -57,7 +57,7 @@ Write-Host "  Services: $ServiceProxy / $ServiceLogger" -ForegroundColor Cyan
 Write-Host "=================================================" -ForegroundColor Cyan
 
 # =============================================================================
-# STEP 1 — Create directories
+# STEP 1 -- Create directories
 # =============================================================================
 Write-Step "Creating directories"
 foreach ($dir in @($BaseDir, $LogDir)) {
@@ -70,7 +70,7 @@ foreach ($dir in @($BaseDir, $LogDir)) {
 }
 
 # =============================================================================
-# STEP 2 — Detect Python
+# STEP 2 -- Detect Python
 # =============================================================================
 Write-Step "Detecting Python 3"
 
@@ -110,7 +110,7 @@ Write-Host "  Installing Python packages (requests)..." -ForegroundColor Yellow
 Write-Ok "Python packages ready"
 
 # =============================================================================
-# STEP 3 — Download agent files from GitHub
+# STEP 3 -- Download agent files from GitHub
 # =============================================================================
 Write-Step "Downloading agent files from GitHub"
 
@@ -133,7 +133,7 @@ Download-File "$RepoBase/to-server.py" $ToServerPath
 Write-Ok "Server IP set to $ServerIP in both files"
 
 # =============================================================================
-# STEP 4 — Download and install mitmproxy
+# STEP 4 -- Download and install mitmproxy
 # =============================================================================
 Write-Step "Installing mitmproxy"
 
@@ -149,7 +149,7 @@ if (-not $MitmExe) {
         Write-Ok "Installer downloaded"
     }
 
-    Write-Host "  Launching installer — complete the install window, then come back here." -ForegroundColor Cyan
+    Write-Host "  Launching installer -- complete the install window, then come back here." -ForegroundColor Cyan
     Start-Process -FilePath $Installer -Wait
     Start-Sleep -Seconds 3
 
@@ -177,11 +177,11 @@ $MitmDumpExe = $MitmExe.FullName
 Write-Ok "mitmdump: $MitmDumpExe"
 
 # =============================================================================
-# STEP 5 — Download NSSM (Windows Service installer)
+# STEP 5 -- Download NSSM (Windows Service installer)
 # =============================================================================
 Write-Step "Setting up NSSM (Windows Service Manager)"
 
-# NSSM must live in a permanent location — not TEMP — so services survive reboots
+# NSSM must live in a permanent location -- not TEMP -- so services survive reboots
 $NssmPerm = "$BaseDir\nssm.exe"
 
 if (-not (Test-Path $NssmPerm)) {
@@ -199,7 +199,7 @@ if (-not (Test-Path $NssmPerm)) {
 }
 
 # =============================================================================
-# STEP 6 — Certificate installation (one-time — needed for HTTPS blocking)
+# STEP 6 -- Certificate installation (one-time -- needed for HTTPS blocking)
 # =============================================================================
 Write-Step "Certificate Installation"
 
@@ -212,7 +212,7 @@ Set-ItemProperty -Path $HKCUReg -Name ProxyOverride -Value "192.168.*;10.*;172.1
 Set-ItemProperty -Path $HKCUReg -Name AutoDetect    -Value 0
 Write-Ok "Temporary proxy set to 127.0.0.1:$ProxyPort"
 
-# Start temporary mitmproxy (hidden window — not permanent)
+# Start temporary mitmproxy (hidden window -- not permanent)
 $TempProxy = Start-Process -FilePath $MitmDumpExe `
     -ArgumentList "--listen-host 0.0.0.0 --listen-port $ProxyPort" `
     -PassThru -WindowStyle Hidden
@@ -244,10 +244,10 @@ Read-Host "  Press ENTER after certificate is installed"
 
 Stop-Process -Id $TempProxy.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
-Write-Ok "Certificate installed — temporary proxy stopped"
+Write-Ok "Certificate installed -- temporary proxy stopped"
 
 # =============================================================================
-# STEP 7 — Remove old services (clean reinstall)
+# STEP 7 -- Remove old services (clean reinstall)
 # =============================================================================
 Write-Step "Removing old services if present"
 
@@ -258,12 +258,12 @@ foreach ($svc in @($ServiceProxy, $ServiceLogger)) {
         & $NssmPerm remove $svc confirm 2>&1 | Out-Null
         Write-Ok "Removed: $svc"
     } else {
-        Write-Ok "$svc not present — clean install"
+        Write-Ok "$svc not present -- clean install"
     }
 }
 
 # =============================================================================
-# STEP 8 — Install SecEoKnight-Proxy as Windows Service
+# STEP 8 -- Install SecEoKnight-Proxy as Windows Service
 # =============================================================================
 Write-Step "Installing SecEoKnight-Proxy service (mitmproxy traffic interceptor)"
 
@@ -284,7 +284,7 @@ Write-Step "Installing SecEoKnight-Proxy service (mitmproxy traffic interceptor)
 Write-Ok "$ServiceProxy service configured"
 
 # =============================================================================
-# STEP 9 — Install SecEoKnight-Logger as Windows Service
+# STEP 9 -- Install SecEoKnight-Logger as Windows Service
 # =============================================================================
 Write-Step "Installing SecEoKnight-Logger service (log forwarder)"
 
@@ -305,7 +305,7 @@ Write-Step "Installing SecEoKnight-Logger service (log forwarder)"
 Write-Ok "$ServiceLogger service configured"
 
 # =============================================================================
-# STEP 10 — Set machine-wide proxy
+# STEP 10 -- Set machine-wide proxy
 # =============================================================================
 Write-Step "Configuring machine-wide proxy"
 
@@ -318,11 +318,11 @@ $LocalIP = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     } | Sort-Object InterfaceMetric | Select-Object -First 1 -ExpandProperty IPAddress)
 if (-not $LocalIP) { $LocalIP = "127.0.0.1" }
 
-# WinHTTP — machine-wide, affects system services and most Windows apps
+# WinHTTP -- machine-wide, affects system services and most Windows apps
 netsh winhttp set proxy "$LocalIP`:$ProxyPort" "192.168.*;10.*;172.16.*;localhost" 2>&1 | Out-Null
 Write-Ok "WinHTTP proxy -> $LocalIP`:$ProxyPort"
 
-# WinINet — browser-level (Chrome, Edge, IE)
+# WinINet -- browser-level (Chrome, Edge, IE)
 $ProxyBypass = "192.168.*;10.*;172.16.*;localhost;<local>"
 Set-ItemProperty -Path $HKCUReg -Name ProxyEnable  -Value 1
 Set-ItemProperty -Path $HKCUReg -Name ProxyServer   -Value "$LocalIP`:$ProxyPort"
@@ -331,7 +331,7 @@ Set-ItemProperty -Path $HKCUReg -Name AutoDetect    -Value 0
 Write-Ok "Browser proxy  -> $LocalIP`:$ProxyPort"
 
 # =============================================================================
-# STEP 11 — Start services
+# STEP 11 -- Start services
 # =============================================================================
 Write-Step "Starting services"
 
