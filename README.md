@@ -306,7 +306,10 @@ You should see 30+ rules added in green.
 ## Step 14 — Run Full Health Check
 
 ```bash
-bash /opt/seceoknight/scripts/health_check.sh
+sudo ufw allow 5001/tcp
+sudo ufw allow 80/tcp
+sudo ufw enable
+bash /scripts/health_check.sh
 ```
 
 Every item should show `[PASS]`. If anything shows `[FAIL]`, the script tells you exactly what to fix.
