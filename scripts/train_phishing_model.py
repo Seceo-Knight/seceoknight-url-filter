@@ -64,10 +64,10 @@ def main():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Fill numeric NaNs with median
+    # Fill numeric NaNs with median (pandas 3.x Copy-on-Write safe)
     for col in df.select_dtypes(include=np.number).columns:
         if df[col].isnull().any():
-            df[col].fillna(df[col].median(), inplace=True)
+            df[col] = df[col].fillna(df[col].median())
 
     X_domain = df["domain"].astype(str)
     y_labels = df["label"].astype("category").cat.codes
