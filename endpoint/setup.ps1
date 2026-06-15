@@ -370,38 +370,50 @@ Write-Ok "$ServiceLogger service configured"
 # =============================================================================
 Write-Step "Configuring machine-wide proxy"
 
-# Get this machine's LAN IP
-$LocalIP = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.IPAddress -ne "127.0.0.1" -and
-        $_.IPAddress -notlike "169.254.*" -and
-        $_.PrefixOrigin -in @("Dhcp","Manual")
-    } | Sort-Object InterfaceMetric | Select-Object -First 1 -ExpandProperty IPAddress)
-if (-not $LocalIP) { $LocalIP = "127.0.0.1" }
+# Always use 127.0.0.1 (localhost) -- mitmproxy listens on all interfaces
+# but routing via localhost means if mitmproxy is down, connections fail
+# gracefully rather than routing to a dead LAN IP and blocking all traffic.
+$ProxyHost = "127.0.0.1"
 
 # WinHTTP -- machine-wide, affects system services and most Windows apps
-netsh winhttp set proxy "$LocalIP`:$ProxyPort" "192.168.*;10.*;172.16.*;localhost" 2>&1 | Out-Null
-Write-Ok "WinHTTP proxy -> $LocalIP`:$ProxyPort"
+netsh winhttp set proxy "$ProxyHost`:$ProxyPort" "192.168.*;10.*;172.16.*;localhost" 2>&1 | Out-Null
+Write-Ok "WinHTTP proxy -> $ProxyHost`:$ProxyPort"
 
 # WinINet -- browser-level (Chrome, Edge, IE)
 $ProxyBypass = "192.168.*;10.*;172.16.*;localhost;<local>"
 Set-ItemProperty -Path $HKCUReg -Name ProxyEnable  -Value 1
-Set-ItemProperty -Path $HKCUReg -Name ProxyServer   -Value "$LocalIP`:$ProxyPort"
+Set-ItemProperty -Path $HKCUReg -Name ProxyServer   -Value "$ProxyHost`:$ProxyPort"
 Set-ItemProperty -Path $HKCUReg -Name ProxyOverride -Value $ProxyBypass
 Set-ItemProperty -Path $HKCUReg -Name AutoDetect    -Value 0
-Write-Ok "Browser proxy  -> $LocalIP`:$ProxyPort"
+Write-Ok "Browser proxy  -> $ProxyHost`:$ProxyPort"
 
 # =============================================================================
 # STEP 11 -- Start services
 # =============================================================================
 Write-Step "Starting services"
 
-Start-Service -Name $ServiceProxy  -ErrorAction Stop
-Start-Sleep -Seconds 3
+try {
+    Start-Service -Name $ServiceProxy -ErrorAction Stop
+} catch {
+    Write-Warn "Could not start $ServiceProxy -- check logs at $LogDir\proxy-error.log"
+    Write-Host "  Reverting proxy settings to avoid losing internet..." -ForegroundColor Yellow
+    netsh winhttp reset proxy 2>&1 | Out-Null
+    Set-ItemProperty -Path $HKCUReg -Name ProxyEnable -Value 0
+    Write-Err "Fix the service issue then re-run this script."
+    exit 1
+}
+Start-Sleep -Seconds 5
 $ps = Get-Service -Name $ServiceProxy
+if ($ps.Status -ne "Running") {
+    Write-Warn "$ServiceProxy stopped unexpectedly -- reverting proxy to protect internet access"
+    netsh winhttp reset proxy 2>&1 | Out-Null
+    Set-ItemProperty -Path $HKCUReg -Name ProxyEnable -Value 0
+    Write-Host "  Check logs: Get-Content $LogDir\proxy-error.log -Tail 30" -ForegroundColor Yellow
+    exit 1
+}
 Write-Ok "$ServiceProxy  ->  $($ps.Status)"
 
-Start-Service -Name $ServiceLogger -ErrorAction Stop
+Start-Service -Name $ServiceLogger -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 $ls = Get-Service -Name $ServiceLogger
 Write-Ok "$ServiceLogger ->  $($ls.Status)"
