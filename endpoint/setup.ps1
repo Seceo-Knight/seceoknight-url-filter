@@ -370,22 +370,21 @@ Write-Ok "$ServiceLogger service configured"
 # =============================================================================
 Write-Step "Configuring machine-wide proxy"
 
-# Always use 127.0.0.1 (localhost) -- mitmproxy listens on all interfaces
-# but routing via localhost means if mitmproxy is down, connections fail
-# gracefully rather than routing to a dead LAN IP and blocking all traffic.
-$ProxyHost = "127.0.0.1"
+# Use a PAC file (Proxy Auto-Config) hosted on the security server.
+# The PAC file contains: "PROXY 127.0.0.1:8082; DIRECT"
+# This means: try proxy first -- if mitmproxy is down, go DIRECT.
+# Internet can NEVER be blocked by this setup, even if the service crashes.
+$PacUrl = "http://$ServerIP/proxy.pac"
 
-# WinHTTP -- machine-wide, affects system services and most Windows apps
-netsh winhttp set proxy "$ProxyHost`:$ProxyPort" "192.168.*;10.*;172.16.*;localhost" 2>&1 | Out-Null
-Write-Ok "WinHTTP proxy -> $ProxyHost`:$ProxyPort"
+# WinHTTP -- machine-wide (system services, background apps)
+netsh winhttp set proxy "127.0.0.1:$ProxyPort" "192.168.*;10.*;172.16.*;localhost" 2>&1 | Out-Null
+Write-Ok "WinHTTP proxy  -> 127.0.0.1:$ProxyPort"
 
-# WinINet -- browser-level (Chrome, Edge, IE)
-$ProxyBypass = "192.168.*;10.*;172.16.*;localhost;<local>"
-Set-ItemProperty -Path $HKCUReg -Name ProxyEnable  -Value 1
-Set-ItemProperty -Path $HKCUReg -Name ProxyServer   -Value "$ProxyHost`:$ProxyPort"
-Set-ItemProperty -Path $HKCUReg -Name ProxyOverride -Value $ProxyBypass
-Set-ItemProperty -Path $HKCUReg -Name AutoDetect    -Value 0
-Write-Ok "Browser proxy  -> $ProxyHost`:$ProxyPort"
+# WinINet -- browser-level (Chrome, Edge) -- PAC file with DIRECT fallback
+Set-ItemProperty -Path $HKCUReg -Name AutoConfigURL -Value $PacUrl
+Set-ItemProperty -Path $HKCUReg -Name ProxyEnable   -Value 0   # PAC takes over, direct proxy disabled
+Set-ItemProperty -Path $HKCUReg -Name AutoDetect     -Value 0
+Write-Ok "Browser proxy  -> PAC: $PacUrl (falls back to DIRECT if proxy is down)"
 
 # =============================================================================
 # STEP 11 -- Start services
