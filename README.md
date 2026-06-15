@@ -175,6 +175,7 @@ trained once from the included dataset:
 ```bash
 cd /opt/seceoknight
 source venv/bin/activate
+pip install scikit-learn
 python3 scripts/train_phishing_model.py
 ```
 
