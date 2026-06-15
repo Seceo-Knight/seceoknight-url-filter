@@ -185,15 +185,76 @@ Write-Step "Setting up NSSM (Windows Service Manager)"
 $NssmPerm = "$BaseDir\nssm.exe"
 
 if (-not (Test-Path $NssmPerm)) {
-    $NssmZip = "$env:TEMP\nssm.zip"
-    $NssmDir = "$env:TEMP\nssm-extract"
+    $NssmOk = $false
 
-    Write-Host "  Downloading NSSM..." -ForegroundColor Yellow
-    Invoke-WebRequest -Uri $NssmUrl -OutFile $NssmZip -UseBasicParsing
-    Expand-Archive -Path $NssmZip -DestinationPath $NssmDir -Force
+    # --- Method 1: try winget (built into Windows 10/11) ---
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget -and -not $NssmOk) {
+        Write-Host "  Trying winget install NSSM..." -ForegroundColor Yellow
+        try {
+            & winget install --id NSSM.NSSM --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # Refresh PATH
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                        [System.Environment]::GetEnvironmentVariable("Path","User")
+            $nssmViaWinget = Get-Command nssm -ErrorAction SilentlyContinue
+            if ($nssmViaWinget) {
+                Copy-Item $nssmViaWinget.Source $NssmPerm -Force
+                $NssmOk = $true
+                Write-Ok "NSSM installed via winget"
+            }
+        } catch {}
+    }
 
-    Copy-Item "$NssmDir\nssm-2.24\win64\nssm.exe" $NssmPerm -Force
-    Write-Ok "NSSM installed at $NssmPerm"
+    # --- Method 2: download zip (try multiple mirrors) ---
+    if (-not $NssmOk) {
+        $NssmUrls = @(
+            "https://nssm.cc/release/nssm-2.24.zip",
+            "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip",
+            "https://github.com/nicm42/nssm-releases/releases/download/v2.24/nssm-2.24.zip"
+        )
+        $NssmZip = "$env:TEMP\nssm.zip"
+        $NssmDir = "$env:TEMP\nssm-extract"
+        foreach ($url in $NssmUrls) {
+            Write-Host "  Downloading NSSM from $url ..." -ForegroundColor Yellow
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $NssmZip -UseBasicParsing -ErrorAction Stop -TimeoutSec 30
+                Expand-Archive -Path $NssmZip -DestinationPath $NssmDir -Force -ErrorAction Stop
+                $nssmExe = Get-ChildItem $NssmDir -Recurse -Filter "nssm.exe" |
+                           Where-Object { $_.FullName -like "*win64*" } |
+                           Select-Object -First 1
+                if (-not $nssmExe) {
+                    $nssmExe = Get-ChildItem $NssmDir -Recurse -Filter "nssm.exe" | Select-Object -First 1
+                }
+                if ($nssmExe) {
+                    Copy-Item $nssmExe.FullName $NssmPerm -Force
+                    $NssmOk = $true
+                    Write-Ok "NSSM installed from $url"
+                    break
+                }
+            } catch {
+                Write-Warn "Failed: $url"
+            }
+        }
+    }
+
+    # --- Method 3: manual fallback ---
+    if (-not $NssmOk) {
+        Write-Host ""
+        Write-Host "+----------------------------------------------------------+" -ForegroundColor Red
+        Write-Host "| NSSM download failed (nssm.cc is temporarily down)      |" -ForegroundColor Red
+        Write-Host "|                                                          |" -ForegroundColor Red
+        Write-Host "| Manual fix (takes 2 minutes):                           |" -ForegroundColor Yellow
+        Write-Host "|  1. Open a browser and go to:                           |" -ForegroundColor White
+        Write-Host "|     https://nssm.cc/release/nssm-2.24.zip               |" -ForegroundColor Cyan
+        Write-Host "|     (or search 'nssm download' if that fails)           |" -ForegroundColor White
+        Write-Host "|  2. Extract the zip                                     |" -ForegroundColor White
+        Write-Host "|  3. Copy nssm-2.24\win64\nssm.exe to:                  |" -ForegroundColor White
+        Write-Host "|     C:\SecEoKnight\nssm.exe                             |" -ForegroundColor Cyan
+        Write-Host "|  4. Re-run this script -- it will skip this step        |" -ForegroundColor White
+        Write-Host "+----------------------------------------------------------+" -ForegroundColor Red
+        Write-Host ""
+        exit 1
+    }
 } else {
     Write-Ok "NSSM already present"
 }
