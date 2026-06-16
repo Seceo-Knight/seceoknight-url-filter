@@ -217,7 +217,7 @@ chrome.downloads.onCreated.addListener((item) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({
-    serverIP:   "192.168.1.189",
+    serverIP:   "192.168.1.63",
     serverPort: 5001,
     enabled:    true
   });
