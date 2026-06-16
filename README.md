@@ -807,28 +807,20 @@ Replace with `http://192.168.1.63:5001` for direct access during development.
 ### 🔒 Blocklist — Block & Unblock Websites
 
 #### List all active rules
-```http
-GET /api/blocklist
-```
-Response:
-```json
-[
-  {"id": 1, "rule_type": "host", "rule_value": "facebook.com", "description": "Social media", "is_active": 1, "created_at": "2024-01-01T10:00:00"},
-  {"id": 2, "rule_type": "regex", "rule_value": ".*torrent.*", "description": "Torrent sites", "is_active": 1}
-]
+```bash
+curl http://localhost:5001/api/blocklist
 ```
 
-List ALL rules including inactive (for restore UI):
-```http
-GET /api/blocklist?active_only=false
+List ALL rules including inactive:
+```bash
+curl "http://localhost:5001/api/blocklist?active_only=false"
 ```
 
 #### Block a website (add rule)
-```http
-POST /api/blocklist
-Content-Type: application/json
-
-{"rule_type": "host", "rule_value": "facebook.com", "description": "Social media block"}
+```bash
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "host", "rule_value": "facebook.com", "comment": "Social media block"}'
 ```
 `rule_type` options:
 - `host` — block entire domain: `"facebook.com"`
@@ -836,33 +828,19 @@ Content-Type: application/json
 - `regex` — block by pattern: `".*gambling.*"`
 - `vid` — block specific YouTube video ID: `"dQw4w9WgXcQ"`
 
-Response `201`:
-```json
-{"message": "Rule added", "rule": {"rule_type": "host", "rule_value": "facebook.com"}}
-```
-Error `409` if rule already exists.
-
 #### Unblock a website (deactivate rule)
-```http
-DELETE /api/blocklist/{id}
-```
-Example — unblock rule ID 1:
-```http
-DELETE /api/blocklist/1
-```
-Response:
-```json
-{"message": "Rule 1 deactivated"}
+```bash
+# First get the rule ID:
+curl http://localhost:5001/api/blocklist
+
+# Then delete by ID:
+curl -X DELETE http://localhost:5001/api/blocklist/1
 ```
 > Rule is **deactivated, not deleted** — it can be restored. Endpoints stop blocking within 30 seconds.
 
 #### Re-block a previously unblocked rule
-```http
-PUT /api/blocklist/{id}/restore
-```
-Response:
-```json
-{"message": "Rule 3 restored"}
+```bash
+curl -X PUT http://localhost:5001/api/blocklist/1/restore
 ```
 
 ---
