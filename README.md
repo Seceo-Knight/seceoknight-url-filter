@@ -8,7 +8,7 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
 
 | Component | Where It Runs | What It Does |
 |---|---|---|
-| **Security Server** | Ubuntu 22.04 (192.168.1.189) | Stores all events, serves the blocklist, runs AI models, pushes alerts to your dashboard |
+| **Security Server** | Ubuntu 22.04 (192.168.1.63) | Stores all events, serves the blocklist, runs AI models, pushes alerts to your dashboard |
 | **mitmproxy Agent** | Each Windows endpoint | Intercepts browser traffic, blocks URLs in real time |
 | **Chrome Extension** | Each Windows endpoint | Detects phishing and malware using AI before the page loads |
 | **SIEM Dashboard** | Separate server *(built later)* | Shows alerts, events, stats, blocklist management |
@@ -24,7 +24,7 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
  │  Windows Endpoint 1          ┌──────────────────────────┐       │
  │  ┌─────────────────┐         │   SECURITY SERVER        │       │
  │  │ mitmproxy       │─logs───▶│   Ubuntu 22.04           │       │
- │  │ Chrome Ext (AI) │─predict▶│   IP: 192.168.1.189      │       │
+ │  │ Chrome Ext (AI) │─predict▶│   IP: 192.168.1.63      │       │
  │  └─────────────────┘◀─block─ │   Port 5001 (API)        │       │
  │                               │   Port 80  (Nginx)       │       │
  │  Windows Endpoint 2  ...×50  │                          │       │
@@ -47,7 +47,7 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
 ### Security Server
 - Ubuntu 22.04 LTS (fresh install)
 - Minimum: 8 GB RAM, 4 CPU cores, 100 GB SSD
-- Static IP on your LAN — set to **192.168.1.189**
+- Static IP on your LAN — set to **192.168.1.63**
 - Internet access (for first-time package install only)
 
 ### Each Windows Endpoint (×50)
@@ -124,11 +124,11 @@ git commit -m "SecEoKnight backend — initial release"
 
 # Create a new repo on github.com called "seceoknight-url-filter"
 # then run:
-git remote add origin https://github.com/YOUR_GITHUB_USERNAME/seceoknight-url-filter.git
+git remote add origin https://github.com/Seceo-Knight/seceoknight-url-filter.git
 git push -u origin main
 ```
 
-> Replace `YOUR_GITHUB_USERNAME` with your actual GitHub username.
+> Replace `Seceo-Knight` with your actual GitHub username.
 
 ---
 
@@ -139,7 +139,7 @@ sudo mkdir -p /opt/seceoknight
 sudo chown $USER:$USER /opt/seceoknight
 cd /opt/seceoknight
 
-git clone https://github.com/YOUR_GITHUB_USERNAME/seceoknight-url-filter.git .
+git clone https://github.com/Seceo-Knight/seceoknight-url-filter.git .
 
 # Download the large model files (Git LFS)
 git lfs pull
@@ -175,7 +175,6 @@ trained once from the included dataset:
 ```bash
 cd /opt/seceoknight
 source venv/bin/activate
-pip install scikit-learn
 python3 scripts/train_phishing_model.py
 ```
 
@@ -205,7 +204,7 @@ uvicorn unified_server:app --host 0.0.0.0 --port 5001
 
 Open a browser on any computer on your LAN and go to:
 ```
-http://192.168.1.189:5001/health
+http://192.168.1.63:5001/health
 ```
 
 You should see:
@@ -306,10 +305,7 @@ You should see 30+ rules added in green.
 ## Step 14 — Run Full Health Check
 
 ```bash
-sudo ufw allow 5001/tcp
-sudo ufw allow 80/tcp
-sudo ufw enable
-bash /scripts/health_check.sh
+bash /opt/seceoknight/scripts/health_check.sh
 ```
 
 Every item should show `[PASS]`. If anything shows `[FAIL]`, the script tells you exactly what to fix.
@@ -320,9 +316,9 @@ Every item should show `[PASS]`. If anything shows `[FAIL]`, the script tells yo
 
 ```bash
 # Test from any machine on the LAN:
-curl http://192.168.1.189/health        # Should return {"status":"healthy",...}
-curl http://192.168.1.189/blocklist     # Should return list of blocked rules
-curl http://192.168.1.189/api/stats     # Should return {"total_requests":0,...}
+curl http://192.168.1.63/health        # Should return {"status":"healthy",...}
+curl http://192.168.1.63/blocklist     # Should return list of blocked rules
+curl http://192.168.1.63/api/stats     # Should return {"total_requests":0,...}
 ```
 
 ---
@@ -345,9 +341,9 @@ Run this on each Windows machine. The script does everything automatically.
 
 Before running the script on any machine, open `endpoint/setup.ps1` in the repo and find:
 ```powershell
-$RepoBase = "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/seceoknight-url-filter/main/endpoint"
+$RepoBase = "https://raw.githubusercontent.com/Seceo-Knight/seceoknight-url-filter/main/endpoint"
 ```
-Replace `YOUR_GITHUB_USERNAME` with your actual GitHub username, then push to GitHub:
+Replace `Seceo-Knight` with your actual GitHub username, then push to GitHub:
 ```bash
 git add endpoint/setup.ps1
 git commit -m "Set GitHub username in setup.ps1"
@@ -367,7 +363,7 @@ git push
 
 3. **Download and run the setup script**
    ```powershell
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/seceoknight-url-filter/main/endpoint/setup.ps1" -OutFile "$env:TEMP\setup.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Seceo-Knight/seceoknight-url-filter/main/endpoint/setup.ps1" -OutFile "$env:TEMP\setup.ps1"
    & "$env:TEMP\setup.ps1"
    ```
 
@@ -382,6 +378,10 @@ git push
    - Set machine-wide proxy to route all browser traffic through mitmproxy
 
 5. **Install the certificate when prompted** *(critical — HTTPS blocking won't work without this)*
+
+   The script opens `http://mitm.it` automatically and pauses. **Close all browser windows first**, then re-open the browser so it picks up the temporary proxy setting.
+
+   **Method A — via mitm.it (preferred):**
    - Browser opens `http://mitm.it` automatically
    - Click **Windows**
    - Download `mitmproxy-ca-cert.cer`
@@ -393,6 +393,16 @@ git push
    - Click Next → Finish
    - You should see: *"The import was successful"*
    - Go back to PowerShell and press **Enter**
+
+   **Method B — if mitm.it shows "traffic is not going through mitmproxy":**
+
+   Press **Enter** in PowerShell to let the script finish, then run this in PowerShell as Admin:
+   ```powershell
+   certutil -addstore root "C:\Windows\System32\config\systemprofile\.mitmproxy\mitmproxy-ca-cert.cer"
+   ```
+   You should see: *"CertUtil: -addstore command completed successfully."*
+
+   This installs the certificate that the running Windows Service uses (stored in the LocalSystem profile).
 
 6. **Setup completes — both agents run as Windows Services:**
    - `SecEoKnight-Proxy` — mitmproxy traffic interceptor
@@ -433,7 +443,7 @@ Create `C:\SecEoKnight\` and copy into it:
 - `agent.py` (from `endpoint/agent.py` in the repo)
 - `to-server.py` (from `endpoint/to-server.py` in the repo)
 
-Both files already have `SERVER_IP = "192.168.1.189"` — leave as-is if that is your server IP.
+Both files already have `SERVER_IP = "192.168.1.63"` — leave as-is if that is your server IP.
 
 ### Step 3 — Configure Windows Proxy
 
@@ -534,9 +544,9 @@ Install this on each endpoint after Part 2.
 
 Open `extension/background.js` and check this line near the top:
 ```javascript
-const API_BASE = "http://192.168.1.189:5001";
+const API_BASE = "http://192.168.1.63:5001";
 ```
-If your server IP is `192.168.1.189` (the default), leave it as-is. If different, update it here.
+If your server IP is `192.168.1.63` (the default), leave it as-is. If different, update it here.
 
 ### Step 2 — Install on Each Windows Machine
 
@@ -578,7 +588,7 @@ Run these checks after completing Parts 1, 2, and 3.
 
 From any machine on the LAN:
 ```
-http://192.168.1.189/health
+http://192.168.1.63/health
 ```
 Expected:
 ```json
@@ -588,14 +598,14 @@ Expected:
 ### Check 2 — Endpoints Are Reporting
 
 ```
-http://192.168.1.189/api/endpoints
+http://192.168.1.63/api/endpoints
 ```
 Each connected endpoint shows as `"status": "active"`.
 
 ### Check 3 — Blocklist Is Being Served
 
 ```
-http://192.168.1.189/blocklist
+http://192.168.1.63/blocklist
 ```
 You should see a list of blocked rules (social media, gambling, etc.).
 
@@ -607,14 +617,14 @@ You should see: **"Blocked by SecEoKnight"**
 ### Check 5 — Events Are Being Recorded
 
 ```
-http://192.168.1.189/api/events?limit=10
+http://192.168.1.63/api/events?limit=10
 ```
 You should see recent events including the `facebook.com` block attempt.
 
 ### Check 6 — Stats Are Updating
 
 ```
-http://192.168.1.189/api/stats
+http://192.168.1.63/api/stats
 ```
 `total_requests` should be increasing as endpoints browse.
 
@@ -713,8 +723,8 @@ The security backend is now fully operational. The next phase is building the **
 
 ## Dashboard API Reference
 
-All requests go to `http://192.168.1.189` (via Nginx on port 80).
-Replace with `http://192.168.1.189:5001` for direct access during development.
+All requests go to `http://192.168.1.63` (via Nginx on port 80).
+Replace with `http://192.168.1.63:5001` for direct access during development.
 
 ---
 
@@ -909,7 +919,7 @@ Response: same structure as events, filtered to threat event types only.
 Connect once from the dashboard — threats push instantly with no polling.
 
 ```
-ws://192.168.1.189/ws/alerts
+ws://192.168.1.63/ws/alerts
 ```
 
 Keep-alive (send every 30s):
