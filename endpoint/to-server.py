@@ -1,7 +1,7 @@
 """
 to-server.py  --  SecEoKnight log forwarder
 Runs on each Windows endpoint.
-Tails C:\url-block\logs.json and POSTs every new line to the unified server.
+Tails C:/url-block/logs.json and POSTs every new line to the unified server.
 
 Run:
   python to-server.py
