@@ -1,5 +1,5 @@
 """
-to-server.py  —  SecEoKnight log forwarder
+to-server.py  --  SecEoKnight log forwarder
 Runs on each Windows endpoint.
 Tails C:\url-block\logs.json and POSTs every new line to the unified server.
 
@@ -12,14 +12,14 @@ import json
 import requests
 from datetime import datetime
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-SERVER_IP     = "192.168.1.189"          # <-- Change to your security server IP
+# -- Configuration -------------------------------------------------------------
+SERVER_IP     = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT   = 5001
 LOGS_FILE     = r"C:\url-block\logs.json"
 API_ENDPOINT  = f"http://{SERVER_IP}:{SERVER_PORT}/logs"
 POLL_INTERVAL = 1       # seconds between file checks
 RETRY_LIMIT   = 5       # max consecutive send failures before warning
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 _fail_count = 0
 
@@ -43,7 +43,7 @@ def send_log(entry: dict):
 
 
 def follow(fp):
-    """Generator that yields new lines as they appear — like tail -f."""
+    """Generator that yields new lines as they appear -- like tail -f."""
     fp.seek(0, 2)   # seek to end
     while True:
         line = fp.readline()
@@ -78,7 +78,7 @@ if __name__ == "__main__":
                     entry = json.loads(line)
                     send_log(entry)
                 except json.JSONDecodeError:
-                    pass   # incomplete line — skip
+                    pass   # incomplete line -- skip
     except KeyboardInterrupt:
         print(f"\n[{datetime.now():%H:%M:%S}] Stopped by user.")
     except Exception as e:
