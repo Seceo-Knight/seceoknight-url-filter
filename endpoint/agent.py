@@ -1,5 +1,5 @@
 """
-agent.py  —  SecEoKnight mitmproxy addon
+agent.py  --  SecEoKnight mitmproxy addon
 Run with:
   mitmproxy --listen-port 8082 -s agent.py
 
@@ -7,7 +7,7 @@ Changes from original:
   - BLOCKLIST_URL now points to the unified server's /blocklist endpoint
     (same plain-text format, zero parser changes)
   - SERVER_IP is the only setting you need to change per deployment
-  - LOG_PATH unchanged — to-server.py picks up logs and forwards them
+  - LOG_PATH unchanged -- to-server.py picks up logs and forwards them
 """
 
 from mitmproxy import http, ctx
@@ -20,8 +20,8 @@ import urllib.request
 import urllib.error
 import threading
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-SERVER_IP    = "192.168.1.189"          # <-- Change to your security server IP
+# -- Configuration -------------------------------------------------------------
+SERVER_IP    = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT  = 5001
 BLOCKLIST_URL = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
 
@@ -33,7 +33,7 @@ MAX_RETRIES      = 2
 RETRY_BACKOFF    = 1.5
 
 SUSPICIOUS_CDN_HOSTS = ("googlevideo.com", "ytimg.com")
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 
 def make_response(status: int, body: bytes, headers: dict):
@@ -62,9 +62,9 @@ class VideoBlockerSafe:
         try:
             self._load_blocklist(force=True)
         except Exception:
-            ctx.log.warn("agent: initial blocklist load failed — continuing")
+            ctx.log.warn("agent: initial blocklist load failed -- continuing")
 
-    # ── Blocklist loader ──────────────────────────────────────────────────────
+    # -- Blocklist loader ------------------------------------------------------
 
     def _load_blocklist(self, force=False):
         now = time.time()
@@ -117,7 +117,7 @@ class VideoBlockerSafe:
                     self.block_hosts    = new_hosts
 
                 ctx.log.info(
-                    f"agent: blocklist loaded — vids={len(new_vids)} "
+                    f"agent: blocklist loaded -- vids={len(new_vids)} "
                     f"prefixes={len(new_prefixes)} hosts={len(new_hosts)}"
                 )
                 return
@@ -134,9 +134,9 @@ class VideoBlockerSafe:
             if attempt <= MAX_RETRIES:
                 time.sleep(RETRY_BACKOFF ** attempt)
 
-        ctx.log.warn("agent: blocklist fetch exhausted — keeping previous rules")
+        ctx.log.warn("agent: blocklist fetch exhausted -- keeping previous rules")
 
-    # ── Logging ───────────────────────────────────────────────────────────────
+    # -- Logging ---------------------------------------------------------------
 
     def _get_log_path(self):
         return LOG_PATH if os.path.isabs(LOG_PATH) else os.path.join(
@@ -204,7 +204,7 @@ class VideoBlockerSafe:
             pass
         return None, None
 
-    # ── Block response ────────────────────────────────────────────────────────
+    # -- Block response --------------------------------------------------------
 
     def _blocked_response(self, flow, reason="blocked"):
         accept = flow.request.headers.get("accept", "")
@@ -219,12 +219,12 @@ class VideoBlockerSafe:
             headers = {"Content-Type": "text/html; charset=utf-8"}
         flow.response = make_response(403, body, headers)
 
-    # ── Watch path helper ─────────────────────────────────────────────────────
+    # -- Watch path helper -----------------------------------------------------
 
     def _is_watch_path(self, path: str):
         return path == "/watch" or path.startswith("/watch/") or path.startswith("/watch?")
 
-    # ── Main request handler ──────────────────────────────────────────────────
+    # -- Main request handler --------------------------------------------------
 
     def request(self, flow: http.HTTPFlow):
         self._load_blocklist()   # no-op if cache is fresh
@@ -237,7 +237,7 @@ class VideoBlockerSafe:
         path   = parsed.path or "/"
         query  = parse_qs(parsed.query or "")
 
-        # 1) YouTube watch page — block by video ID
+        # 1) YouTube watch page -- block by video ID
         if self._is_watch_path(path):
             vlist = query.get("v", [])
             if vlist and vlist[0] in self.block_vids:
@@ -249,7 +249,7 @@ class VideoBlockerSafe:
                 self._blocked_response(flow, reason=f"Video {vid} is blocked")
                 return
 
-        # 2) YouTube internal API — block by video ID in request body
+        # 2) YouTube internal API -- block by video ID in request body
         if host.endswith("youtube.com") and (
             "/youtubei/v1/player" in path or "/youtubei/v1/next" in path
         ):
@@ -292,7 +292,7 @@ class VideoBlockerSafe:
             except Exception as e:
                 ctx.log.debug(f"agent: API parse failed: {e}")
 
-        # 3) CDN hosts — only block when referer contains a blocked video
+        # 3) CDN hosts -- only block when referer contains a blocked video
         if any(host.endswith(p) for p in SUSPICIOUS_CDN_HOSTS):
             referer = req.headers.get("referer", "")
             if referer:
@@ -314,7 +314,7 @@ class VideoBlockerSafe:
             with self._lock:
                 self.counters["allowed"] += 1
             self._emit_log(flow, "allowed_cdn", blocked=False,
-                           extra={"note": "cdn allowed — no blocked referer"})
+                           extra={"note": "cdn allowed -- no blocked referer"})
             return
 
         # 4) Host-only rules
@@ -354,12 +354,12 @@ class VideoBlockerSafe:
                     self._blocked_response(flow, reason=f"Prefix rule {rule} matched")
                     return
 
-        # Default — allowed
+        # Default -- allowed
         with self._lock:
             self.counters["allowed"] += 1
         self._emit_log(flow, "allowed", blocked=False)
 
-    # ── Stats endpoint ────────────────────────────────────────────────────────
+    # -- Stats endpoint --------------------------------------------------------
 
     def response(self, flow: http.HTTPFlow):
         parsed = urlparse(flow.request.pretty_url)
