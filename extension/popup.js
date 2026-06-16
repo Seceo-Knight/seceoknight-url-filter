@@ -2,7 +2,7 @@
 // SecEoKnight Extension — Popup Script
 // =============================================================================
 
-const API_BASE = "http://192.168.1.189:5001";
+const API_BASE = "http://192.168.1.63:5001";
 
 async function loadStatus() {
   const loading = document.getElementById("loading");
