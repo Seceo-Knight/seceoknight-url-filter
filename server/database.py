@@ -141,19 +141,20 @@ def insert_event(data: dict):
         conn.close()
 
 
-def upsert_endpoint(ip: str, blocked: bool = False):
-    """Update or insert endpoint record."""
+def upsert_endpoint(ip: str, hostname: str = '', blocked: bool = False):
+    """Update or insert endpoint record, storing hostname when available."""
     conn = get_connection()
     try:
         conn.execute("""
-            INSERT INTO endpoints (ip, last_seen, total_requests, total_blocked)
-            VALUES (?, datetime('now'), 1, ?)
+            INSERT INTO endpoints (ip, hostname, last_seen, total_requests, total_blocked)
+            VALUES (?, ?, datetime('now'), 1, ?)
             ON CONFLICT(ip) DO UPDATE SET
                 last_seen      = datetime('now'),
                 total_requests = total_requests + 1,
                 total_blocked  = total_blocked + ?,
-                status         = 'active'
-        """, (ip, 1 if blocked else 0, 1 if blocked else 0))
+                status         = 'active',
+                hostname       = CASE WHEN ? != '' THEN ? ELSE hostname END
+        """, (ip, hostname, 1 if blocked else 0, 1 if blocked else 0, hostname, hostname))
         conn.commit()
     finally:
         conn.close()

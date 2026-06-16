@@ -189,10 +189,11 @@ async def receive_log(payload: dict):
     # Save event
     db.insert_event(payload)
 
-    # Update endpoint stats
-    client_ip = payload.get("client_ip", "")
+    # Update endpoint stats (use endpoint_ip if available, else client_ip)
+    client_ip = payload.get("endpoint_ip", "") or payload.get("client_ip", "")
+    hostname  = payload.get("endpoint_hostname", "")
     if client_ip:
-        db.upsert_endpoint(client_ip, blocked=blocked)
+        db.upsert_endpoint(client_ip, hostname=hostname, blocked=blocked)
 
     # Push to dashboard if it's a threat
     HIGH_SEVERITY = {
