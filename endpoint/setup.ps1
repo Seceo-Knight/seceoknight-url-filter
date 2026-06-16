@@ -18,7 +18,7 @@
 $ErrorActionPreference = "Stop"
 
 # -- Configuration --------------------------------------------------------------
-$ServerIP     = "192.168.1.189"      # <-- Change if your server IP is different
+$ServerIP     = "192.168.1.63"      # <-- Change if your server IP is different
 $ServerPort   = 5001
 $ProxyPort    = 8082
 $BaseDir      = "C:\SecEoKnight"
