@@ -302,7 +302,83 @@ You should see 30+ rules added in green.
 
 ---
 
-## Step 14 — Run Full Health Check
+## Step 14 — Managing the Blocklist (Add / Remove / Update Rules)
+
+Run all commands on the Ubuntu server. Endpoints pick up changes within 30 seconds automatically.
+
+### View all active rules
+```bash
+curl http://localhost:5001/api/blocklist
+```
+
+### Block an entire domain (and all subdomains)
+```bash
+# Blocks facebook.com, www.facebook.com, m.facebook.com etc.
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "host", "rule_value": "facebook.com", "comment": "block facebook"}'
+```
+
+### Block a specific subdomain only
+```bash
+# Only blocks m.facebook.com — www.facebook.com still works
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "host", "rule_value": "m.facebook.com", "comment": "block mobile site only"}'
+```
+
+### Block a specific path on a domain (not the full site)
+```bash
+# Only blocks youtube.com/shorts — rest of YouTube still works
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "prefix", "rule_value": "youtube.com/shorts", "comment": "block shorts only"}'
+```
+
+### Block using regex (advanced — matches any URL containing the pattern)
+```bash
+# Blocks any URL containing "gambling" or "casino"
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "regex", "rule_value": "gambling|casino", "comment": "block gambling sites"}'
+```
+
+### Block a specific YouTube video by ID
+```bash
+# Get the video ID from the URL: youtube.com/watch?v=dQw4w9WgXcQ
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "vid", "rule_value": "dQw4w9WgXcQ", "comment": "block specific video"}'
+```
+
+### Remove a rule (get the ID from the list)
+```bash
+# First get IDs:
+curl http://localhost:5001/api/blocklist
+
+# Then delete by ID (rule is deactivated, not permanently deleted):
+curl -X DELETE http://localhost:5001/api/blocklist/1
+```
+
+### Restore a previously removed rule
+```bash
+curl -X PUT http://localhost:5001/api/blocklist/1/restore
+```
+
+**Rule type summary:**
+
+| Type | Blocks | Example value |
+|------|--------|---------------|
+| `host` | Entire domain + all subdomains | `facebook.com` |
+| `prefix` | Specific path on a domain | `youtube.com/shorts` |
+| `regex` | Any URL matching a pattern | `gambling\|casino` |
+| `vid` | Specific YouTube video ID | `dQw4w9WgXcQ` |
+
+> Endpoints refresh the blocklist every 30 seconds. No restart needed after adding or removing rules.
+
+---
+
+## Step 15 — Run Full Health Check
 
 ```bash
 bash /opt/seceoknight/scripts/health_check.sh
