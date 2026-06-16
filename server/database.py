@@ -32,6 +32,8 @@ def init_db():
             timestamp       REAL,
             timestamp_iso   TEXT,
             event_type      TEXT,        -- blocked_watch / blocked_host / allowed / ai_phishing / ai_malware …
+            endpoint_ip     TEXT,        -- LAN IP of the Windows endpoint that generated this event
+            endpoint_hostname TEXT,      -- hostname of the Windows endpoint
             client_ip       TEXT,
             client_port     INTEGER,
             host            TEXT,
@@ -53,6 +55,13 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_blocked    ON events(blocked)")
+
+    # Migrate existing DBs that predate endpoint_ip / endpoint_hostname columns
+    existing_cols = {row[1] for row in cur.execute("PRAGMA table_info(events)").fetchall()}
+    if "endpoint_ip" not in existing_cols:
+        cur.execute("ALTER TABLE events ADD COLUMN endpoint_ip TEXT DEFAULT ''")
+    if "endpoint_hostname" not in existing_cols:
+        cur.execute("ALTER TABLE events ADD COLUMN endpoint_hostname TEXT DEFAULT ''")
 
     # ── Blocklist ─────────────────────────────────────────────────────────────
     cur.execute("""
@@ -95,33 +104,37 @@ def insert_event(data: dict):
     try:
         conn.execute("""
             INSERT INTO events
-                (timestamp, timestamp_iso, event_type, client_ip, client_port,
+                (timestamp, timestamp_iso, event_type, endpoint_ip, endpoint_hostname,
+                 client_ip, client_port,
                  host, url, method, blocked, block_type, block_rule,
                  ai_score, ai_model, malware_family, threat_level,
                  user_agent, raw_log)
             VALUES
-                (:timestamp, :timestamp_iso, :event_type, :client_ip, :client_port,
+                (:timestamp, :timestamp_iso, :event_type, :endpoint_ip, :endpoint_hostname,
+                 :client_ip, :client_port,
                  :host, :url, :method, :blocked, :block_type, :block_rule,
                  :ai_score, :ai_model, :malware_family, :threat_level,
                  :user_agent, :raw_log)
         """, {
-            "timestamp":      data.get("timestamp", time.time()),
-            "timestamp_iso":  data.get("timestamp_iso", ""),
-            "event_type":     data.get("event", data.get("event_type", "unknown")),
-            "client_ip":      data.get("client_ip", ""),
-            "client_port":    data.get("client_port"),
-            "host":           data.get("host", ""),
-            "url":            data.get("url", ""),
-            "method":         data.get("method", ""),
-            "blocked":        1 if data.get("blocked") else 0,
-            "block_type":     data.get("block_type", ""),
-            "block_rule":     data.get("block_rule", data.get("rule", "")),
-            "ai_score":       data.get("ai_score"),
-            "ai_model":       data.get("ai_model", ""),
-            "malware_family": data.get("malware_family", ""),
-            "threat_level":   data.get("threat_level", ""),
-            "user_agent":     data.get("user_agent", ""),
-            "raw_log":        data.get("raw_log", ""),
+            "timestamp":         data.get("timestamp", time.time()),
+            "timestamp_iso":     data.get("timestamp_iso", ""),
+            "event_type":        data.get("event", data.get("event_type", "unknown")),
+            "endpoint_ip":       data.get("endpoint_ip", ""),
+            "endpoint_hostname": data.get("endpoint_hostname", ""),
+            "client_ip":         data.get("client_ip", ""),
+            "client_port":       data.get("client_port"),
+            "host":              data.get("host", ""),
+            "url":               data.get("url", ""),
+            "method":            data.get("method", ""),
+            "blocked":           1 if data.get("blocked") else 0,
+            "block_type":        data.get("block_type", ""),
+            "block_rule":        data.get("block_rule", data.get("rule", "")),
+            "ai_score":          data.get("ai_score"),
+            "ai_model":          data.get("ai_model", ""),
+            "malware_family":    data.get("malware_family", ""),
+            "threat_level":      data.get("threat_level", ""),
+            "user_agent":        data.get("user_agent", ""),
+            "raw_log":           data.get("raw_log", ""),
         })
         conn.commit()
     finally:
