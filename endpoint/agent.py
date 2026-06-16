@@ -16,9 +16,26 @@ import time
 import os
 import re
 import json
+import socket
 import urllib.request
 import urllib.error
 import threading
+
+
+def _get_endpoint_ip():
+    """Get the real LAN IP of this machine (not 127.0.0.1)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return socket.gethostname()
+
+
+ENDPOINT_IP       = _get_endpoint_ip()
+ENDPOINT_HOSTNAME = socket.gethostname()
 
 # -- Configuration -------------------------------------------------------------
 SERVER_IP    = "192.168.1.63"          # <-- Change to your security server IP
@@ -171,11 +188,13 @@ class VideoBlockerSafe:
             pass
 
         payload = {
-            "timestamp":     time.time(),
-            "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
-            "event":         event_type,
-            "client_ip":     ip,
-            "client_port":   port,
+            "timestamp":       time.time(),
+            "timestamp_iso":   time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+            "event":           event_type,
+            "endpoint_ip":     ENDPOINT_IP,
+            "endpoint_hostname": ENDPOINT_HOSTNAME,
+            "client_ip":       ip,
+            "client_port":     port,
             "host":          parsed.hostname if parsed else (req.host if req else None),
             "url":           req.pretty_url if req else None,
             "method":        req.method if req else None,
