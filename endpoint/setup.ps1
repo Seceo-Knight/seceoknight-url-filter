@@ -18,20 +18,23 @@
 $ErrorActionPreference = "Stop"
 
 # -- Configuration --------------------------------------------------------------
-$ServerIP     = "192.168.1.63"      # <-- Change if your server IP is different
-$ServerPort   = 5001
-$ProxyPort    = 8082
-$BaseDir      = "C:\SecEoKnight"
-$LogDir       = "C:\SecEoKnight\Logs"
-$AgentPath    = "$BaseDir\agent.py"
-$ToServerPath = "$BaseDir\to-server.py"
+$ServerIP          = "192.168.1.63"      # <-- Change if your server IP is different
+$ServerPort        = 5001
+$ProxyPort         = 8082
+$BaseDir           = "C:\SecEoKnight"
+$LogDir            = "C:\SecEoKnight\Logs"
+$QuarantineDir     = "C:\SecEoKnight\Quarantine"
+$AgentPath         = "$BaseDir\agent.py"
+$ToServerPath      = "$BaseDir\to-server.py"
+$MalwareWatcherPath = "$BaseDir\malware_watcher.py"
 
 $MitmInstallerUrl = "https://downloads.mitmproxy.org/10.2.4/mitmproxy-10.2.4-windows-x86_64-installer.exe"
 $NssmUrl          = "https://nssm.cc/release/nssm-2.24.zip"
 $RepoBase         = "https://raw.githubusercontent.com/Seceo-Knight/seceoknight-url-filter/main/endpoint"
 
-$ServiceProxy  = "SecEoKnight-Proxy"
-$ServiceLogger = "SecEoKnight-Logger"
+$ServiceProxy   = "SecEoKnight-Proxy"
+$ServiceLogger  = "SecEoKnight-Logger"
+$ServiceScanner = "SecEoKnight-Scanner"
 $MaxWait       = 600
 $ScanInterval  = 5
 # ------------------------------------------------------------------------------
@@ -60,7 +63,7 @@ Write-Host "=================================================" -ForegroundColor 
 # STEP 1 -- Create directories
 # =============================================================================
 Write-Step "Creating directories"
-foreach ($dir in @($BaseDir, $LogDir)) {
+foreach ($dir in @($BaseDir, $LogDir, $QuarantineDir)) {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         Write-Ok "Created $dir"
@@ -105,8 +108,8 @@ if (-not $PythonExe) {
 }
 Write-Ok "Python: $PythonExe"
 
-Write-Host "  Installing Python packages (requests)..." -ForegroundColor Yellow
-& $PythonExe -m pip install requests --quiet --disable-pip-version-check
+Write-Host "  Installing Python packages (requests, watchdog, pillow)..." -ForegroundColor Yellow
+& $PythonExe -m pip install requests watchdog pillow --quiet --disable-pip-version-check
 Write-Ok "Python packages ready"
 
 # =============================================================================
@@ -124,13 +127,15 @@ function Download-File($url, $dest) {
     }
 }
 
-Download-File "$RepoBase/agent.py"     $AgentPath
-Download-File "$RepoBase/to-server.py" $ToServerPath
+Download-File "$RepoBase/agent.py"           $AgentPath
+Download-File "$RepoBase/to-server.py"       $ToServerPath
+Download-File "$RepoBase/malware_watcher.py" $MalwareWatcherPath
 
-# Patch server IP into both files
-(Get-Content $AgentPath    -Raw) -replace '192\.168\.1\.189', $ServerIP | Set-Content $AgentPath    -Encoding UTF8
-(Get-Content $ToServerPath -Raw) -replace '192\.168\.1\.189', $ServerIP | Set-Content $ToServerPath -Encoding UTF8
-Write-Ok "Server IP set to $ServerIP in both files"
+# Patch server IP into all agent files
+(Get-Content $AgentPath           -Raw) -replace '192\.168\.1\.\d+', $ServerIP | Set-Content $AgentPath           -Encoding UTF8
+(Get-Content $ToServerPath        -Raw) -replace '192\.168\.1\.\d+', $ServerIP | Set-Content $ToServerPath        -Encoding UTF8
+(Get-Content $MalwareWatcherPath  -Raw) -replace '192\.168\.1\.\d+', $ServerIP | Set-Content $MalwareWatcherPath  -Encoding UTF8
+Write-Ok "Server IP set to $ServerIP in all agent files"
 
 # =============================================================================
 # STEP 4 -- Download and install mitmproxy
@@ -312,7 +317,7 @@ Write-Ok "Certificate installed -- temporary proxy stopped"
 # =============================================================================
 Write-Step "Removing old services if present"
 
-foreach ($svc in @($ServiceProxy, $ServiceLogger)) {
+foreach ($svc in @($ServiceProxy, $ServiceLogger, $ServiceScanner)) {
     if (Get-Service -Name $svc -ErrorAction SilentlyContinue) {
         Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
@@ -366,7 +371,28 @@ Write-Step "Installing SecEoKnight-Logger service (log forwarder)"
 Write-Ok "$ServiceLogger service configured"
 
 # =============================================================================
-# STEP 10 -- Set machine-wide proxy
+# STEP 10 -- Install SecEoKnight-Scanner as Windows Service
+# =============================================================================
+Write-Step "Installing SecEoKnight-Scanner service (malware file watcher)"
+
+& $NssmPerm install    $ServiceScanner $PythonExe
+& $NssmPerm set        $ServiceScanner AppParameters    "`"$MalwareWatcherPath`""
+& $NssmPerm set        $ServiceScanner DisplayName      "SecEoKnight Malware Scanner"
+& $NssmPerm set        $ServiceScanner Description      "SecEoKnight malware file watcher. Scans new Downloads using AI CNN model. Quarantines detected malware. Do not stop."
+& $NssmPerm set        $ServiceScanner Start            SERVICE_AUTO_START
+& $NssmPerm set        $ServiceScanner ObjectName       LocalSystem
+& $NssmPerm set        $ServiceScanner AppStdout        "$LogDir\scanner.log"
+& $NssmPerm set        $ServiceScanner AppStderr        "$LogDir\scanner-error.log"
+& $NssmPerm set        $ServiceScanner AppRotateFiles   1
+& $NssmPerm set        $ServiceScanner AppRotateOnline  1
+& $NssmPerm set        $ServiceScanner AppRotateBytes   10485760
+& $NssmPerm set        $ServiceScanner AppRestartDelay  5000
+& $NssmPerm set        $ServiceScanner AppThrottle      1500
+
+Write-Ok "$ServiceScanner service configured"
+
+# =============================================================================
+# STEP 12 -- Set machine-wide proxy
 # =============================================================================
 Write-Step "Configuring machine-wide proxy"
 
@@ -387,7 +413,7 @@ Set-ItemProperty -Path $HKCUReg -Name AutoDetect     -Value 0
 Write-Ok "Browser proxy  -> PAC: $PacUrl (falls back to DIRECT if proxy is down)"
 
 # =============================================================================
-# STEP 11 -- Start services
+# STEP 13 -- Start services
 # =============================================================================
 Write-Step "Starting services"
 
@@ -417,6 +443,11 @@ Start-Sleep -Seconds 2
 $ls = Get-Service -Name $ServiceLogger
 Write-Ok "$ServiceLogger ->  $($ls.Status)"
 
+Start-Service -Name $ServiceScanner -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+$ss = Get-Service -Name $ServiceScanner
+Write-Ok "$ServiceScanner -> $($ss.Status)"
+
 # =============================================================================
 # Done
 # =============================================================================
@@ -427,6 +458,7 @@ Write-Host "+---------------------------------------------------+" -ForegroundCo
 Write-Host "| Services installed:                               |" -ForegroundColor White
 Write-Host "|   SecEoKnight-Proxy   [running as Windows Service]|" -ForegroundColor White
 Write-Host "|   SecEoKnight-Logger  [running as Windows Service]|" -ForegroundColor White
+Write-Host "|   SecEoKnight-Scanner [running as Windows Service]|" -ForegroundColor White
 Write-Host "|                                                   |" -ForegroundColor White
 Write-Host "| Both services:                                    |" -ForegroundColor White
 Write-Host "|   Auto-start on every Windows boot               |" -ForegroundColor Green
@@ -440,6 +472,7 @@ Write-Host "|   sc query SecEoKnight-Proxy   <- check status    |" -ForegroundCo
 Write-Host "|   sc stop  SecEoKnight-Proxy   <- stop service    |" -ForegroundColor White
 Write-Host "|   sc start SecEoKnight-Proxy   <- start service   |" -ForegroundColor White
 Write-Host "|                                                   |" -ForegroundColor White
+Write-Host "| Quarantine: C:\SecEoKnight\Quarantine\            |" -ForegroundColor White
 Write-Host "| Logs at: C:\SecEoKnight\Logs\                     |" -ForegroundColor White
 Write-Host "+---------------------------------------------------+" -ForegroundColor Green
 Write-Host ""
