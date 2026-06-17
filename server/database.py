@@ -145,9 +145,39 @@ def insert_event(data: dict):
 
 
 def upsert_endpoint(ip: str, hostname: str = '', blocked: bool = False):
-    """Update or insert endpoint record, storing hostname when available."""
+    """
+    Update or insert endpoint record.
+
+    Deduplication strategy:
+      - If a hostname is known, use hostname as the stable identity key.
+        The IP field is updated in-place so DHCP IP changes don't create
+        duplicate endpoint rows.
+      - If no hostname is available, fall back to IP-based deduplication.
+    """
     conn = get_connection()
     try:
+        inc_blocked = 1 if blocked else 0
+
+        if hostname:
+            # Check whether we already know this hostname (regardless of IP)
+            existing = conn.execute(
+                "SELECT id FROM endpoints WHERE hostname = ?", (hostname,)
+            ).fetchone()
+            if existing:
+                # Hostname matched — update IP (handles DHCP changes) and stats
+                conn.execute("""
+                    UPDATE endpoints SET
+                        ip             = ?,
+                        last_seen      = datetime('now'),
+                        total_requests = total_requests + 1,
+                        total_blocked  = total_blocked + ?,
+                        status         = 'active'
+                    WHERE hostname = ?
+                """, (ip, inc_blocked, hostname))
+                conn.commit()
+                return
+
+        # No hostname, or hostname not yet seen — dedup on IP
         conn.execute("""
             INSERT INTO endpoints (ip, hostname, last_seen, total_requests, total_blocked)
             VALUES (?, ?, datetime('now'), 1, ?)
@@ -157,7 +187,7 @@ def upsert_endpoint(ip: str, hostname: str = '', blocked: bool = False):
                 total_blocked  = total_blocked + ?,
                 status         = 'active',
                 hostname       = CASE WHEN ? != '' THEN ? ELSE hostname END
-        """, (ip, hostname, 1 if blocked else 0, 1 if blocked else 0, hostname, hostname))
+        """, (ip, hostname, inc_blocked, inc_blocked, hostname, hostname))
         conn.commit()
     finally:
         conn.close()

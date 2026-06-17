@@ -193,9 +193,11 @@ async def receive_log(payload: dict):
     db.insert_event(payload)
 
     # Update endpoint stats (use endpoint_ip if available, else client_ip)
+    # Skip non-IP values like "extension" (Chrome ext) or empty strings
     client_ip = payload.get("endpoint_ip", "") or payload.get("client_ip", "")
     hostname  = payload.get("endpoint_hostname", "")
-    if client_ip:
+    _skip = {"", "extension", "unknown"}
+    if client_ip and client_ip not in _skip and not client_ip.startswith("ext"):
         db.upsert_endpoint(client_ip, hostname=hostname, blocked=blocked)
 
     # Push to dashboard if it's a threat
