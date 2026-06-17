@@ -56,12 +56,14 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON events(timestamp)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_blocked    ON events(blocked)")
 
-    # Migrate existing DBs that predate endpoint_ip / endpoint_hostname columns
+    # Migrate existing DBs — add columns that didn't exist in earlier versions
     existing_cols = {row[1] for row in cur.execute("PRAGMA table_info(events)").fetchall()}
     if "endpoint_ip" not in existing_cols:
         cur.execute("ALTER TABLE events ADD COLUMN endpoint_ip TEXT DEFAULT ''")
     if "endpoint_hostname" not in existing_cols:
         cur.execute("ALTER TABLE events ADD COLUMN endpoint_hostname TEXT DEFAULT ''")
+    if "quarantine_path" not in existing_cols:
+        cur.execute("ALTER TABLE events ADD COLUMN quarantine_path TEXT DEFAULT ''")
 
     # ── Blocklist ─────────────────────────────────────────────────────────────
     cur.execute("""
@@ -108,13 +110,13 @@ def insert_event(data: dict):
                  client_ip, client_port,
                  host, url, method, blocked, block_type, block_rule,
                  ai_score, ai_model, malware_family, threat_level,
-                 user_agent, raw_log)
+                 user_agent, quarantine_path, raw_log)
             VALUES
                 (:timestamp, :timestamp_iso, :event_type, :endpoint_ip, :endpoint_hostname,
                  :client_ip, :client_port,
                  :host, :url, :method, :blocked, :block_type, :block_rule,
                  :ai_score, :ai_model, :malware_family, :threat_level,
-                 :user_agent, :raw_log)
+                 :user_agent, :quarantine_path, :raw_log)
         """, {
             "timestamp":         data.get("timestamp", time.time()),
             "timestamp_iso":     data.get("timestamp_iso", ""),
@@ -134,6 +136,7 @@ def insert_event(data: dict):
             "malware_family":    data.get("malware_family", ""),
             "threat_level":      data.get("threat_level", ""),
             "user_agent":        data.get("user_agent", ""),
+            "quarantine_path":   data.get("quarantine_path", ""),
             "raw_log":           data.get("raw_log", ""),
         })
         conn.commit()
