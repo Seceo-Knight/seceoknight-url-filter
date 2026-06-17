@@ -375,7 +375,7 @@ Write-Ok "$ServiceLogger service configured"
 # =============================================================================
 Write-Step "Installing SecEoKnight-Scanner service (malware file watcher)"
 
-& $NssmPerm install    $ServiceScanner $PythonExe
+& $NssmPerm install    $ServiceScanner $PythonExe   # same Python resolved via Get-Command, same as Logger
 & $NssmPerm set        $ServiceScanner AppParameters    "`"$MalwareWatcherPath`""
 & $NssmPerm set        $ServiceScanner DisplayName      "SecEoKnight Malware Scanner"
 & $NssmPerm set        $ServiceScanner Description      "SecEoKnight malware file watcher. Scans new Downloads using AI CNN model. Quarantines detected malware. Do not stop."
