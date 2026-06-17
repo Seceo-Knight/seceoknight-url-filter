@@ -38,7 +38,7 @@ async function loadStatus() {
     document.getElementById("stat-blocks").textContent =
       (stats.blocked_requests ?? stats.total_blocked ?? "—").toLocaleString();
     document.getElementById("stat-ai").textContent =
-      (stats.ai_detections ?? "—").toLocaleString();
+      ((stats.ai_phishing ?? 0) + (stats.ai_malware ?? 0)).toLocaleString();
 
   } catch {
     // Server unreachable
@@ -52,7 +52,7 @@ async function loadStatus() {
 
   // Read server IP from storage
   chrome.storage.local.get(["serverIP", "serverPort"], (cfg) => {
-    document.getElementById("info-ip").textContent   = cfg.serverIP   || "192.168.1.189";
+    document.getElementById("info-ip").textContent   = cfg.serverIP   || "192.168.1.63";
     document.getElementById("info-port").textContent = cfg.serverPort || "5001";
   });
 
