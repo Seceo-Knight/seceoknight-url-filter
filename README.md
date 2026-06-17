@@ -10,7 +10,8 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
 |---|---|---|
 | **Security Server** | Ubuntu 22.04 (192.168.1.63) | Stores all events, serves the blocklist, runs AI models, pushes alerts to your dashboard |
 | **mitmproxy Agent** | Each Windows endpoint | Intercepts browser traffic, blocks URLs in real time |
-| **Chrome Extension** | Each Windows endpoint | Detects phishing and malware using AI before the page loads |
+| **Chrome Extension** | Each Windows endpoint | Detects phishing URLs using AI before the page loads |
+| **Malware Scanner** | Each Windows endpoint | Watches Downloads folder, scans new files with AI CNN model, quarantines detected malware |
 | **SIEM Dashboard** | Separate server *(built later)* | Shows alerts, events, stats, blocklist management |
 
 ---
@@ -444,13 +445,15 @@ git push
    ```
 
 4. **The script will automatically:**
-   - Create `C:\SecEoKnight\` folder
-   - Download `agent.py` and `to-server.py`
+   - Create `C:\SecEoKnight\` and `C:\SecEoKnight\Quarantine\` folders
+   - Download `agent.py`, `to-server.py`, and `malware_watcher.py`
+   - Install Python packages (`requests`, `watchdog`, `pillow`)
    - Download and install mitmproxy
    - Download NSSM (Windows Service manager) to `C:\SecEoKnight\nssm.exe`
    - Open `http://mitm.it` so you can install the certificate
    - Install **SecEoKnight-Proxy** as a Windows Service (mitmproxy + agent.py)
    - Install **SecEoKnight-Logger** as a Windows Service (to-server.py)
+   - Install **SecEoKnight-Scanner** as a Windows Service (malware_watcher.py)
    - Set machine-wide proxy to route all browser traffic through mitmproxy
 
 5. **Install the certificate when prompted** *(critical — HTTPS blocking won't work without this)*
@@ -480,11 +483,12 @@ git push
 
    This installs the certificate that the running Windows Service uses (stored in the LocalSystem profile).
 
-6. **Setup completes — both agents run as Windows Services:**
+6. **Setup completes — all three agents run as Windows Services:**
    - `SecEoKnight-Proxy` — mitmproxy traffic interceptor
    - `SecEoKnight-Logger` — log forwarder to security server
+   - `SecEoKnight-Scanner` — AI malware file watcher (quarantines threats from Downloads)
 
-   **No PowerShell windows to keep open.** Both services:
+   **No PowerShell windows to keep open.** All services:
    - Start automatically every time Windows boots
    - Run silently in the background — invisible to users
    - Restart automatically if they crash
@@ -563,12 +567,19 @@ $python   = (Get-Command python).Source
 & $nssm set SecEoKnight-Logger AppParameters "`"C:\SecEoKnight\to-server.py`""
 & $nssm set SecEoKnight-Logger Start SERVICE_AUTO_START
 
-# Start both
+# Scanner service
+& $nssm install SecEoKnight-Scanner $python
+& $nssm set SecEoKnight-Scanner AppParameters "`"C:\SecEoKnight\malware_watcher.py`""
+& $nssm set SecEoKnight-Scanner AppDirectory "C:\SecEoKnight"
+& $nssm set SecEoKnight-Scanner Start SERVICE_AUTO_START
+
+# Start all three
 Start-Service SecEoKnight-Proxy
 Start-Service SecEoKnight-Logger
+Start-Service SecEoKnight-Scanner
 ```
 
-Both services now run silently in the background — no windows to keep open. They start automatically on every boot.
+All three services now run silently in the background — no windows to keep open. They start automatically on every boot.
 
 ---
 
@@ -743,6 +754,8 @@ sqlite3 /opt/seceoknight/server/seceoknight.db "SELECT COUNT(*) FROM events;"
 | Server won't start | `sudo journalctl -u seceoknight -n 50` — check error message |
 | AI shows `not_loaded` | Run `python3 scripts/train_phishing_model.py` then restart server |
 | Endpoint not appearing in list | Run `sc query SecEoKnight-Logger` — must show RUNNING; check server IP |
+| Malware scanner not running | Run `Get-Service SecEoKnight-Scanner` — check `C:\SecEoKnight\Logs\scanner-error.log` |
+| File not quarantined | Check file extension is in scan list and size is over 512 bytes |
 | Websites not being blocked | Wait 30 seconds; check proxy is ON in Windows Settings |
 | `http://mitm.it` won't open | Make sure mitmproxy is running first and proxy is configured |
 | Certificate error in Chrome | Re-install mitmproxy certificate as Local Machine (not Current User) |
@@ -767,7 +780,8 @@ SeceoKnight-backend/
 ├── endpoint/                      ← Runs on each Windows machine (×50)
 │   ├── agent.py                   ← mitmproxy plugin — intercepts + blocks URLs
 │   ├── to-server.py               ← Sends logs to security server
-│   └── setup.ps1                  ← One-click Windows setup script
+│   ├── malware_watcher.py         ← AI malware scanner — watches Downloads, quarantines threats
+│   └── setup.ps1                  ← One-click Windows setup script (installs all 3 services)
 │
 ├── scripts/                       ← Run on security server (one-time setup)
 │   ├── train_phishing_model.py    ← Trains the BiLSTM phishing model
@@ -893,8 +907,8 @@ Event type values:
 - `blocked_regex` — regex rule matched
 - `blocked_watch` — YouTube video ID blocked
 - `allowed` — request passed through
-- `ai_phishing` — Chrome extension detected phishing
-- `ai_malware` — Chrome extension detected malware
+- `ai_phishing` — Chrome extension detected phishing URL
+- `ai_malware` — malware_watcher.py detected and quarantined a malicious file
 
 ---
 
