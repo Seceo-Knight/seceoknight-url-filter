@@ -276,8 +276,8 @@ def get_events(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/stats", tags=["Dashboard"])
-def get_stats(from_ts: Optional[str] = None):
-    return db.get_stats(from_ts=from_ts)
+def get_stats():
+    return db.get_stats()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
