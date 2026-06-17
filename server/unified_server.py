@@ -121,15 +121,18 @@ def add_blocklist_rule(rule: BlocklistRule):
 
     conn = db.get_connection()
     try:
+        # UPSERT: if rule was previously soft-deleted, reactivate it instead of erroring
         conn.execute("""
-            INSERT INTO blocklist (rule_type, rule_value, description, added_by)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO blocklist (rule_type, rule_value, description, added_by, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(rule_type, rule_value) DO UPDATE SET
+                is_active   = 1,
+                description = excluded.description,
+                added_by    = excluded.added_by
         """, (rule.rule_type, rule.rule_value.strip(),
               rule.description, rule.added_by))
         conn.commit()
         return {"message": "Rule added", "rule": rule.model_dump()}
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Rule already exists")
     finally:
         conn.close()
 
@@ -273,8 +276,8 @@ def get_events(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/stats", tags=["Dashboard"])
-def get_stats():
-    return db.get_stats()
+def get_stats(from_ts: Optional[str] = None):
+    return db.get_stats(from_ts=from_ts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
