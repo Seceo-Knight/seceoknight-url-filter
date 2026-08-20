@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SecEoKnight</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 300px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      background: #1a1a2e;
+      color: #e0e0e0;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #0f3460, #16213e);
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #0f3460;
+    }
+    .header img  { width: 32px; height: 32px; }
+    .header-text h1 { font-size: 15px; color: #fff; font-weight: bold; }
+    .header-text p  { font-size: 11px; color: #8899aa; margin-top: 1px; }
+
+    .status-row {
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #222244;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .dot.green  { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+    .dot.red    { background: #e74c3c; box-shadow: 0 0 6px #e74c3c; }
+    .dot.yellow { background: #f39c12; box-shadow: 0 0 6px #f39c12; }
+    .status-label { flex: 1; font-size: 13px; }
+    .status-label small { display: block; font-size: 11px; color: #8899aa; margin-top: 2px; }
+
+    .stats {
+      padding: 12px 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      border-bottom: 1px solid #222244;
+    }
+    .stat-box {
+      background: #16213e;
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+    }
+    .stat-box .num  { font-size: 22px; font-weight: bold; color: #e74c3c; }
+    .stat-box .lbl  { font-size: 11px; color: #8899aa; margin-top: 2px; }
+
+    .section {
+      padding: 10px 16px;
+      border-bottom: 1px solid #222244;
+    }
+    .section-title {
+      font-size: 11px;
+      color: #8899aa;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .server-info {
+      font-size: 12px;
+      color: #b0b8c8;
+      line-height: 1.8;
+    }
+    .server-info span { color: #4fc3f7; font-family: monospace; }
+
+    .footer {
+      padding: 10px 16px;
+      font-size: 11px;
+      color: #556677;
+      text-align: center;
+    }
+
+    #loading { padding: 20px; text-align: center; color: #8899aa; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <img src="icons/icon48.png" alt="SecEoKnight">
+    <div class="header-text">
+      <h1>SecEoKnight</h1>
+      <p>URL Filtering &amp; Threat Detection</p>
+    </div>
+  </div>
+
+  <div id="loading">Checking server…</div>
+
+  <div id="content" style="display:none">
+
+    <div class="status-row">
+      <div class="dot" id="server-dot"></div>
+      <div class="status-label">
+        <div id="server-status-text">Checking…</div>
+        <small id="server-status-sub"></small>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-box">
+        <div class="num" id="stat-blocks">—</div>
+        <div class="lbl">Total Blocks</div>
+      </div>
+      <div class="stat-box">
+        <div class="num" id="stat-ai" style="color:#e67e22">—</div>
+        <div class="lbl">AI Detections</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Server</div>
+      <div class="server-info">
+        IP: <span id="info-ip">192.168.1.189</span><br>
+        Port: <span id="info-port">5001</span><br>
+        AI Models: <span id="info-models">—</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">SecEoKnight Security &copy; 2024</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
