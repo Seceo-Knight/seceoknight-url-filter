@@ -649,10 +649,14 @@ sudo systemctl restart seceoknight
 # View live server logs
 sudo journalctl -u seceoknight -f
 
-# Update from GitHub
+# Update from GitHub (code-only changes)
 cd /opt/seceoknight
 git pull
 sudo systemctl restart seceoknight
+
+# If the update touched requirements.txt, systemd/, or nginx/ instead of just
+# application code, re-run the installer so those get picked up too:
+#   sudo bash scripts/install.sh
 
 # Add a blocklist rule manually
 curl -X POST http://localhost:5001/api/blocklist \
@@ -670,7 +674,7 @@ sqlite3 /opt/seceoknight/server/seceoknight.db "SELECT COUNT(*) FROM events;"
 | Problem | Fix |
 |---|---|
 | Server won't start | `sudo journalctl -u seceoknight -n 50` — check error message |
-| AI shows `not_loaded` | Run `python3 scripts/train_phishing_model.py` then restart server |
+| AI shows `not_loaded` | `cd /opt/seceoknight && source venv/bin/activate && python3 scripts/train_phishing_model.py`, then `sudo systemctl restart seceoknight` |
 | Endpoint not appearing in list | Run `sc.exe query SecEoKnight-Logger` (not plain `sc` — PowerShell aliases that to `Set-Content`) — must show RUNNING; check server IP |
 | Malware scanner not running | Run `Get-Service SecEoKnight-Scanner` — check `C:\SecEoKnight\Logs\scanner-error.log` |
 | File not quarantined | Check file extension is in scan list and size is over 512 bytes |
