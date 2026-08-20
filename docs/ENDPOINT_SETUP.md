@@ -197,6 +197,8 @@ Open Chrome and go to `http://mitm.it` → click **Windows** → install the `.c
 
 Press `Ctrl+C` to stop the temporary proxy.
 
+> **Important:** the temporary proxy above generates its CA certificate under your current user profile (`%USERPROFILE%\.mitmproxy`). The permanent Windows service you install in Step 5 runs as `LocalSystem` — a different account with its own profile — so it will generate and present a *different* CA unless you explicitly point both at the same config directory. Use `--set confdir="C:\SecEoKnight\mitm-confdir"` on **both** the temporary proxy command above and the service's `AppParameters` in Step 5, or every HTTPS site will fail with a certificate-trust error once the permanent service takes over.
+
 ### Step 5 — Install as Windows Services (NSSM)
 
 Download NSSM:
@@ -214,7 +216,7 @@ $python   = (Get-Command python).Source
 $logdir   = "C:\SecEoKnight\Logs"
 
 & $nssm install SecEoKnight-Proxy $mitmdump
-& $nssm set SecEoKnight-Proxy AppParameters "--listen-host 0.0.0.0 --listen-port 8082 -s `"C:\SecEoKnight\agent.py`""
+& $nssm set SecEoKnight-Proxy AppParameters "--listen-host 0.0.0.0 --listen-port 8082 -s `"C:\SecEoKnight\agent.py`" --set confdir=`"C:\SecEoKnight\mitm-confdir`""
 & $nssm set SecEoKnight-Proxy Start          SERVICE_AUTO_START
 & $nssm set SecEoKnight-Proxy AppStdout      "$logdir\proxy.log"
 & $nssm set SecEoKnight-Proxy AppStderr      "$logdir\proxy-error.log"

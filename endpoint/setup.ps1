@@ -28,6 +28,13 @@ $QuarantineDir      = "C:\SecEoKnight\Quarantine"
 $AgentPath          = "$BaseDir\agent.py"
 $ToServerPath       = "$BaseDir\to-server.py"
 $MalwareWatcherPath = "$BaseDir\malware_watcher.py"
+# Shared mitmproxy config/CA-cert directory. Both the temporary cert-install
+# proxy (run as the interactive Administrator) and the permanent NSSM service
+# (run as LocalSystem) must point at THIS SAME folder via --set confdir=...
+# Otherwise mitmproxy generates two different self-signed CAs under two
+# different Windows profiles, the user trusts one, the running service
+# presents the other, and every HTTPS site fails with a cert-trust error.
+$MitmConfDir        = "$BaseDir\mitm-confdir"
 
 $MitmInstallerUrl = "https://downloads.mitmproxy.org/10.2.4/mitmproxy-10.2.4-windows-x86_64-installer.exe"
 $NssmUrl          = "https://nssm.cc/release/nssm-2.24.zip"
@@ -64,7 +71,7 @@ Write-Host "=================================================" -ForegroundColor 
 # STEP 1 -- Create directories
 # =============================================================================
 Write-Step "Creating directories"
-foreach ($dir in @($BaseDir, $LogDir, $QuarantineDir)) {
+foreach ($dir in @($BaseDir, $LogDir, $QuarantineDir, $MitmConfDir)) {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         Write-Ok "Created $dir"
@@ -284,7 +291,7 @@ Write-Ok "Temporary proxy set to 127.0.0.1:$ProxyPort"
 
 # Start temporary mitmproxy (hidden window -- not permanent)
 $TempProxy = Start-Process -FilePath $MitmDumpExe `
-    -ArgumentList "--listen-host 0.0.0.0 --listen-port $ProxyPort" `
+    -ArgumentList "--listen-host 0.0.0.0 --listen-port $ProxyPort --set confdir=`"$MitmConfDir`"" `
     -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 3
 
@@ -338,7 +345,7 @@ foreach ($svc in @($ServiceProxy, $ServiceLogger, $ServiceScanner)) {
 Write-Step "Installing SecEoKnight-Proxy service (mitmproxy traffic interceptor)"
 
 & $NssmPerm install    $ServiceProxy $MitmDumpExe
-& $NssmPerm set        $ServiceProxy AppParameters    "--listen-host 0.0.0.0 --listen-port $ProxyPort -s `"$AgentPath`""
+& $NssmPerm set        $ServiceProxy AppParameters    "--listen-host 0.0.0.0 --listen-port $ProxyPort -s `"$AgentPath`" --set confdir=`"$MitmConfDir`""
 & $NssmPerm set        $ServiceProxy DisplayName      "SecEoKnight Proxy Agent"
 & $NssmPerm set        $ServiceProxy Description      "SecEoKnight URL filtering proxy. Intercepts and blocks browser traffic per central blocklist. Do not stop."
 & $NssmPerm set        $ServiceProxy Start            SERVICE_AUTO_START
