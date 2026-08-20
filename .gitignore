@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# SQLite database -- runtime data, never commit
+server/*.db
+server/*.db-wal
+server/*.db-shm
+
+# OS
+.DS_Store
+
+# Logs
+*.log

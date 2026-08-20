@@ -35,6 +35,7 @@ $MalwareWatcherPath = "$BaseDir\malware_watcher.py"
 # different Windows profiles, the user trusts one, the running service
 # presents the other, and every HTTPS site fails with a cert-trust error.
 $MitmConfDir        = "$BaseDir\mitm-confdir"
+$HKCUReg            = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 
 $MitmInstallerUrl = "https://downloads.mitmproxy.org/10.2.4/mitmproxy-10.2.4-windows-x86_64-installer.exe"
 $NssmUrl          = "https://nssm.cc/release/nssm-2.24.zip"
@@ -276,52 +277,52 @@ if (-not (Test-Path $NssmPerm)) {
 }
 
 # =============================================================================
-# STEP 6 -- Certificate installation (one-time -- needed for HTTPS blocking)
+# STEP 6 -- Certificate generation + automatic install (no browser needed)
 # =============================================================================
-Write-Step "Certificate Installation"
+# mitmproxy writes its CA certificate files to $MitmConfDir the moment it
+# starts, whether or not anything actually connects through it. Importing
+# that file directly is faster and far less error-prone than the old
+# mitm.it-in-a-browser flow -- it removes every failure mode we've hit
+# (wrong cert store, .p12 vs .cer confusion, temp-vs-service CA mismatch),
+# and we verify the import instead of just trusting a keypress.
+Write-Step "Certificate Installation (automatic)"
 
-$HKCUReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+$CertCer = "$MitmConfDir\mitmproxy-ca-cert.cer"
 
-# Temporarily set proxy to localhost so the browser can reach http://mitm.it
-Set-ItemProperty -Path $HKCUReg -Name ProxyEnable  -Value 1
-Set-ItemProperty -Path $HKCUReg -Name ProxyServer   -Value "127.0.0.1:$ProxyPort"
-Set-ItemProperty -Path $HKCUReg -Name ProxyOverride -Value "192.168.*;10.*;172.16.*;localhost;<local>"
-Set-ItemProperty -Path $HKCUReg -Name AutoDetect    -Value 0
-Write-Ok "Temporary proxy set to 127.0.0.1:$ProxyPort"
+if (-not (Test-Path $CertCer)) {
+    Write-Host "  Generating CA certificate..." -ForegroundColor Yellow
+    $CertGenProc = Start-Process -FilePath $MitmDumpExe `
+        -ArgumentList "--listen-host 127.0.0.1 --listen-port $ProxyPort --set confdir=`"$MitmConfDir`"" `
+        -PassThru -WindowStyle Hidden
+    $waited = 0
+    while (-not (Test-Path $CertCer) -and $waited -lt 30) {
+        Start-Sleep -Seconds 1
+        $waited++
+    }
+    Stop-Process -Id $CertGenProc.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+}
 
-# Start temporary mitmproxy (hidden window -- not permanent)
-$TempProxy = Start-Process -FilePath $MitmDumpExe `
-    -ArgumentList "--listen-host 0.0.0.0 --listen-port $ProxyPort --set confdir=`"$MitmConfDir`"" `
-    -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 3
+if (-not (Test-Path $CertCer)) {
+    Write-Err "mitmproxy did not generate a CA certificate at $CertCer"
+    Write-Host "  Re-run this script, or generate it manually with:" -ForegroundColor Yellow
+    Write-Host "  mitmdump --set confdir=`"$MitmConfDir`"  (then Ctrl+C after a few seconds)" -ForegroundColor Yellow
+    exit 1
+}
 
-# Open the certificate page
-Start-Process "http://mitm.it"
+Import-Certificate -FilePath $CertCer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
 
-Write-Host ""
-Write-Host "+--------------------------------------------------------------+" -ForegroundColor Yellow
-Write-Host "| INSTALL THE CERTIFICATE (required for HTTPS blocking)        |" -ForegroundColor Yellow
-Write-Host "+--------------------------------------------------------------+" -ForegroundColor Yellow
-Write-Host "| A browser page opened at http://mitm.it                      |" -ForegroundColor White
-Write-Host "|                                                              |" -ForegroundColor White
-Write-Host "|  1. Click  [Windows]                                         |" -ForegroundColor White
-Write-Host "|  2. Download  mitmproxy-ca-cert.cer                          |" -ForegroundColor White
-Write-Host "|  3. Double-click the .cer file                               |" -ForegroundColor White
-Write-Host "|  4. Click  [Install Certificate]                             |" -ForegroundColor White
-Write-Host "|  5. Choose [Local Machine]  -> Next                          |" -ForegroundColor White
-Write-Host "|  6. Choose [Place all certificates in the following store]   |" -ForegroundColor White
-Write-Host "|  7. Click  [Browse] -> [Trusted Root Cert. Authorities] -> OK|" -ForegroundColor White
-Write-Host "|  8. Next -> Finish                                           |" -ForegroundColor White
-Write-Host "|                                                              |" -ForegroundColor White
-Write-Host "|  Look for: 'The import was successful'                       |" -ForegroundColor Green
-Write-Host "+--------------------------------------------------------------+" -ForegroundColor Yellow
-Write-Host ""
-
-Read-Host "  Press ENTER after certificate is installed"
-
-Stop-Process -Id $TempProxy.Id -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
-Write-Ok "Certificate installed -- temporary proxy stopped"
+# Verify it actually landed instead of assuming
+$installedCert = Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Subject -like "*mitmproxy*" }
+if ($installedCert) {
+    Write-Ok "Certificate installed and verified in Trusted Root (thumbprint: $($installedCert[0].Thumbprint))"
+} else {
+    Write-Err "Certificate import could not be verified in Cert:\LocalMachine\Root."
+    Write-Host "  HTTPS blocking will fail until this is fixed. Manually import:" -ForegroundColor Yellow
+    Write-Host "  $CertCer -> double-click -> Local Machine -> Trusted Root Certification Authorities" -ForegroundColor Yellow
+    exit 1
+}
 
 # =============================================================================
 # STEP 7 -- Remove old services (clean reinstall)

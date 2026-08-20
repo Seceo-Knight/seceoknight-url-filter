@@ -257,49 +257,70 @@ def get_blocklist_text():
         conn.close()
 
 
-def get_stats():
-    """Return aggregated stats dict for the dashboard."""
+def get_stats(from_ts: str = None):
+    """
+    Return aggregated stats dict for the dashboard.
+
+    @param from_ts: optional ISO cutoff ("YYYY-MM-DDTHH:MM:SS", matching the
+        format agent.py writes to timestamp_iso). When given, every volume
+        metric below is scoped to events at or after this time -- this is
+        what powers the dashboard's 12h/24h/3d/7d time-range picker.
+        'today_blocked' is intentionally always "today" regardless of range.
+    """
     conn = get_connection()
     try:
-        total      = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        blocked    = conn.execute("SELECT COUNT(*) FROM events WHERE blocked=1").fetchone()[0]
-        allowed    = conn.execute("SELECT COUNT(*) FROM events WHERE blocked=0").fetchone()[0]
-        ai_phish   = conn.execute("SELECT COUNT(*) FROM events WHERE event_type='ai_phishing'").fetchone()[0]
-        ai_malware = conn.execute("SELECT COUNT(*) FROM events WHERE event_type='ai_malware'").fetchone()[0]
+        time_clause = "timestamp_iso >= ?" if from_ts else "1=1"
+        time_params = (from_ts,) if from_ts else ()
+
+        total      = conn.execute(f"SELECT COUNT(*) FROM events WHERE {time_clause}", time_params).fetchone()[0]
+        blocked    = conn.execute(f"SELECT COUNT(*) FROM events WHERE {time_clause} AND blocked=1", time_params).fetchone()[0]
+        allowed    = conn.execute(f"SELECT COUNT(*) FROM events WHERE {time_clause} AND blocked=0", time_params).fetchone()[0]
+        ai_phish   = conn.execute(f"SELECT COUNT(*) FROM events WHERE {time_clause} AND event_type='ai_phishing'", time_params).fetchone()[0]
+        ai_malware = conn.execute(f"SELECT COUNT(*) FROM events WHERE {time_clause} AND event_type='ai_malware'", time_params).fetchone()[0]
         endpoints  = conn.execute(f"""
             SELECT COUNT(*) FROM endpoints
             WHERE status='active' AND last_seen >= datetime('now', '-{STALE_THRESHOLD_MINUTES} minutes')
         """).fetchone()[0]
 
-        # Threats today
+        # Threats today (always "today", independent of the selected range)
         today_blocked = conn.execute("""
             SELECT COUNT(*) FROM events
             WHERE blocked=1 AND date(timestamp_iso) = date('now')
         """).fetchone()[0]
 
-        # Top blocked domains
-        top_domains = conn.execute("""
+        # Top blocked domains (scoped to range)
+        top_domains = conn.execute(f"""
             SELECT host, COUNT(*) as cnt FROM events
-            WHERE blocked=1 AND host != ''
+            WHERE {time_clause} AND blocked=1 AND host != ''
             GROUP BY host ORDER BY cnt DESC LIMIT 10
-        """).fetchall()
+        """, time_params).fetchall()
 
-        # Hourly activity (last 24h)
-        hourly = conn.execute("""
-            SELECT strftime('%Y-%m-%dT%H:00:00', timestamp_iso) as hour,
-                   COUNT(*) as total,
-                   SUM(blocked) as blocked
-            FROM events
-            WHERE timestamp >= strftime('%s', 'now', '-24 hours')
-            GROUP BY hour ORDER BY hour
-        """).fetchall()
+        # Hourly activity -- scoped to range if given, else last 24h default
+        if from_ts:
+            hourly = conn.execute("""
+                SELECT strftime('%Y-%m-%dT%H:00:00', timestamp_iso) as hour,
+                       COUNT(*) as total,
+                       SUM(blocked) as blocked
+                FROM events
+                WHERE timestamp_iso >= ?
+                GROUP BY hour ORDER BY hour
+            """, (from_ts,)).fetchall()
+        else:
+            hourly = conn.execute("""
+                SELECT strftime('%Y-%m-%dT%H:00:00', timestamp_iso) as hour,
+                       COUNT(*) as total,
+                       SUM(blocked) as blocked
+                FROM events
+                WHERE timestamp >= strftime('%s', 'now', '-24 hours')
+                GROUP BY hour ORDER BY hour
+            """).fetchall()
 
-        # Block type breakdown
-        breakdown = conn.execute("""
+        # Block type breakdown (scoped to range)
+        breakdown = conn.execute(f"""
             SELECT block_type, COUNT(*) as cnt FROM events
-            WHERE blocked=1 AND block_type != ''
+            WHERE {time_clause} AND blocked=1 AND block_type != ''
             GROUP BY block_type ORDER BY cnt DESC
-        """).fetchall()
+        """, time_params).fetchall()
 
         return {
             "total_requests":  total,
