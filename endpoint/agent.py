@@ -50,6 +50,7 @@ MAX_RETRIES      = 2
 RETRY_BACKOFF    = 1.5
 
 SUSPICIOUS_CDN_HOSTS = ("googlevideo.com", "ytimg.com")
+MAX_LOG_BYTES = 20 * 1024 * 1024   # rotate (truncate) LOG_PATH before it grows past this
 # -----------------------------------------------------------------------------
 
 
@@ -170,6 +171,18 @@ class VideoBlockerSafe:
             pass
         try:
             with self._lock:
+                # Rotate before this grows unbounded (it's appended to on every
+                # request with no cleanup otherwise). Truncate in place rather
+                # than rename/delete -- to-server.py has this file open for
+                # tailing in a separate process, and Windows won't let another
+                # process rename or delete a file that's currently open.
+                # to-server.py detects the truncation (file got smaller than
+                # its read position) and re-seeks to the start on its own.
+                try:
+                    if os.path.exists(path) and os.path.getsize(path) >= MAX_LOG_BYTES:
+                        open(path, "w", encoding="utf-8").close()
+                except Exception:
+                    pass
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         except Exception as e:
