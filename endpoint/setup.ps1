@@ -57,7 +57,8 @@ Write-Host ""
 Write-Host "=================================================" -ForegroundColor Cyan
 Write-Host "  SecEoKnight Endpoint Setup" -ForegroundColor Cyan
 Write-Host "  Server  : $ServerIP`:$ServerPort" -ForegroundColor Cyan
-Write-Host "  Services: $ServiceProxy / $ServiceLogger / $ServiceScanner" -ForegroundColor CyanWrite-Host "=================================================" -ForegroundColor Cyan
+Write-Host "  Services: $ServiceProxy / $ServiceLogger / $ServiceScanner" -ForegroundColor Cyan
+Write-Host "=================================================" -ForegroundColor Cyan
 
 # =============================================================================
 # STEP 1 -- Create directories
