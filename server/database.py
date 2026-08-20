@@ -10,6 +10,11 @@ import time
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "seceoknight.db")
 
+# An endpoint is considered "active" only if it has sent a heartbeat or real
+# traffic within this window. Heartbeats fire every 60s (see to-server.py),
+# so 3 minutes tolerates a couple of missed beats without flapping.
+STALE_THRESHOLD_MINUTES = 3
+
 
 def get_connection():
     """Return a SQLite connection with row_factory set."""
@@ -193,6 +198,44 @@ def upsert_endpoint(ip: str, hostname: str = '', blocked: bool = False):
         conn.close()
 
 
+def heartbeat_endpoint(ip: str, hostname: str = ''):
+    """
+    Lightweight periodic ping (independent of real browsing traffic).
+    Refreshes last_seen/status only -- does NOT touch total_requests or
+    total_blocked, since a heartbeat isn't a browsing event. This is what
+    lets an idle-but-running endpoint stay 'active' while one that's been
+    uninstalled or crashed naturally ages out to 'inactive' on its own.
+    """
+    conn = get_connection()
+    try:
+        if hostname:
+            existing = conn.execute(
+                "SELECT id FROM endpoints WHERE hostname = ?", (hostname,)
+            ).fetchone()
+            if existing:
+                conn.execute("""
+                    UPDATE endpoints SET
+                        ip        = ?,
+                        last_seen = datetime('now'),
+                        status    = 'active'
+                    WHERE hostname = ?
+                """, (ip, hostname))
+                conn.commit()
+                return
+
+        conn.execute("""
+            INSERT INTO endpoints (ip, hostname, last_seen, total_requests, total_blocked, status)
+            VALUES (?, ?, datetime('now'), 0, 0, 'active')
+            ON CONFLICT(ip) DO UPDATE SET
+                last_seen = datetime('now'),
+                status    = 'active',
+                hostname  = CASE WHEN ? != '' THEN ? ELSE hostname END
+        """, (ip, hostname, hostname, hostname))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_blocklist_text():
     """Return blocklist in the plain-text format agent.py expects."""
     conn = get_connection()
@@ -223,7 +266,10 @@ def get_stats():
         allowed    = conn.execute("SELECT COUNT(*) FROM events WHERE blocked=0").fetchone()[0]
         ai_phish   = conn.execute("SELECT COUNT(*) FROM events WHERE event_type='ai_phishing'").fetchone()[0]
         ai_malware = conn.execute("SELECT COUNT(*) FROM events WHERE event_type='ai_malware'").fetchone()[0]
-        endpoints  = conn.execute("SELECT COUNT(*) FROM endpoints WHERE status='active'").fetchone()[0]
+        endpoints  = conn.execute(f"""
+            SELECT COUNT(*) FROM endpoints
+            WHERE status='active' AND last_seen >= datetime('now', '-{STALE_THRESHOLD_MINUTES} minutes')
+        """).fetchone()[0]
 
         # Threats today
         today_blocked = conn.execute("""

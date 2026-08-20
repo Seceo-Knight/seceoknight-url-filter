@@ -221,6 +221,24 @@ async def receive_log(payload: dict):
     return {"received": True}
 
 
+class HeartbeatIn(BaseModel):
+    ip: str
+    hostname: str = ""
+
+
+@app.post("/api/heartbeat", tags=["Logs"], status_code=202)
+def receive_heartbeat(hb: HeartbeatIn):
+    """
+    Lightweight periodic ping from to-server.py, sent independently of real
+    browsing traffic. Keeps an idle-but-healthy endpoint's last_seen fresh
+    so it doesn't get wrongly marked inactive, while an endpoint that's
+    actually been uninstalled or crashed stops pinging and ages out to
+    'inactive' on its own within a few minutes -- no manual DB edits needed.
+    """
+    db.heartbeat_endpoint(hb.ip, hb.hostname)
+    return {"received": True}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  EVENTS  — dashboard reads these
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -286,13 +304,26 @@ def get_stats():
 #  ENDPOINTS  — dashboard endpoint monitor tab
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_ENDPOINT_STATUS_CASE = f"""
+    CASE
+        WHEN status = 'active'
+             AND last_seen >= datetime('now', '-{db.STALE_THRESHOLD_MINUTES} minutes')
+        THEN 'active'
+        ELSE 'inactive'
+    END AS status
+"""
+
+
 @app.get("/api/endpoints", tags=["Dashboard"])
 def get_endpoints():
     conn = db.get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM endpoints ORDER BY last_seen DESC"
-        ).fetchall()
+        rows = conn.execute(f"""
+            SELECT id, ip, hostname, last_seen, total_requests, total_blocked,
+                   agent_version, {_ENDPOINT_STATUS_CASE}
+            FROM endpoints
+            ORDER BY last_seen DESC
+        """).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
@@ -302,9 +333,11 @@ def get_endpoints():
 def get_endpoint_detail(ip: str):
     conn = db.get_connection()
     try:
-        ep = conn.execute(
-            "SELECT * FROM endpoints WHERE ip=?", (ip,)
-        ).fetchone()
+        ep = conn.execute(f"""
+            SELECT id, ip, hostname, last_seen, total_requests, total_blocked,
+                   agent_version, {_ENDPOINT_STATUS_CASE}
+            FROM endpoints WHERE ip=?
+        """, (ip,)).fetchone()
         if not ep:
             raise HTTPException(404, "Endpoint not found")
 
