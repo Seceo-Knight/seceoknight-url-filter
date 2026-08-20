@@ -41,13 +41,10 @@ if [ ! -f "$INSTALL_DIR/server/unified_server.py" ]; then
 fi
 
 if [ "$INSTALL_DIR" != "/opt/seceoknight" ]; then
-    warn "Repo is at $INSTALL_DIR, not /opt/seceoknight."
-    warn "The systemd service and Nginx config in this repo hardcode /opt/seceoknight —"
-    warn "if you keep this location, you'll need to edit systemd/seceoknight.service and"
-    warn "nginx/seceoknight.conf yourself after this script finishes. Recommended: move the"
-    warn "clone to /opt/seceoknight and re-run this script from there instead."
-    read -p "  Continue anyway? [y/N] " -n 1 -r; echo
-    [[ $REPLY =~ ^[Yy]$ ]] || exit 1
+    warn "Repo is at $INSTALL_DIR, not the default /opt/seceoknight."
+    warn "systemd/seceoknight.service and nginx/seceoknight.conf are written for /opt/seceoknight —"
+    warn "this script rewrites those paths to match $INSTALL_DIR automatically before installing"
+    warn "them (Steps 4 and 5 below), so this is safe to continue with as-is."
 fi
 
 REAL_USER="${SUDO_USER:-$USER}"
@@ -92,8 +89,22 @@ fi
 deactivate
 
 # ── Step 4 -- systemd service ────────────────────────────────────────────────
+# The repo's systemd/seceoknight.service and nginx/seceoknight.conf hardcode
+# /opt/seceoknight as WorkingDirectory/ExecStart/proxy.pac paths. If this repo
+# actually lives somewhere else (e.g. /opt/seceoknight/seceoknight-url-filter,
+# a common result of `git clone <url>` without the trailing " ." that clones
+# into a subfolder), copying those files unmodified would install a service
+# that points at paths that don't exist and fails to start -- or worse,
+# silently overwrite a DIFFERENT already-working service file that some
+# previous manual setup had correctly pointed at the real path. So: always
+# rewrite /opt/seceoknight -> $INSTALL_DIR in the copies we install, even
+# when they're the same (harmless no-op in that case).
 step "Installing systemd service"
-cp "$INSTALL_DIR/systemd/seceoknight.service" /etc/systemd/system/seceoknight.service
+if [ -f /etc/systemd/system/seceoknight.service ]; then
+    cp /etc/systemd/system/seceoknight.service "/etc/systemd/system/seceoknight.service.bak.$(date +%s)"
+    ok "Backed up existing service file before overwriting"
+fi
+sed "s|/opt/seceoknight|$INSTALL_DIR|g" "$INSTALL_DIR/systemd/seceoknight.service" > /etc/systemd/system/seceoknight.service
 systemctl daemon-reload
 systemctl enable seceoknight >/dev/null 2>&1
 systemctl restart seceoknight
@@ -102,12 +113,29 @@ if systemctl is-active --quiet seceoknight; then
     ok "seceoknight service is running"
 else
     err "seceoknight service failed to start — check: sudo journalctl -u seceoknight -n 50"
+    LATEST_BACKUP="$(ls -t /etc/systemd/system/seceoknight.service.bak.* 2>/dev/null | head -1)"
+    if [ -n "$LATEST_BACKUP" ]; then
+        warn "Restoring the previous working service file from $LATEST_BACKUP so the server doesn't stay down..."
+        cp "$LATEST_BACKUP" /etc/systemd/system/seceoknight.service
+        systemctl daemon-reload
+        systemctl restart seceoknight
+        sleep 2
+        if systemctl is-active --quiet seceoknight; then
+            ok "Restored and running on the previous config. Fix the new one before re-running this script."
+        else
+            err "Restore also failed to start — this needs manual intervention. See journalctl output above."
+        fi
+    fi
     exit 1
 fi
 
 # ── Step 5 -- Nginx reverse proxy ───────────────────────────────────────────
 step "Configuring Nginx"
-cp "$INSTALL_DIR/nginx/seceoknight.conf" /etc/nginx/sites-available/seceoknight
+if [ -f /etc/nginx/sites-available/seceoknight ]; then
+    cp /etc/nginx/sites-available/seceoknight "/etc/nginx/sites-available/seceoknight.bak.$(date +%s)"
+    ok "Backed up existing Nginx config before overwriting"
+fi
+sed "s|/opt/seceoknight|$INSTALL_DIR|g" "$INSTALL_DIR/nginx/seceoknight.conf" > /etc/nginx/sites-available/seceoknight
 ln -sf /etc/nginx/sites-available/seceoknight /etc/nginx/sites-enabled/seceoknight
 rm -f /etc/nginx/sites-enabled/default
 if nginx -t >/dev/null 2>&1; then
