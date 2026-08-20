@@ -840,8 +840,10 @@ Event type values:
 GET /api/stats
 ```
 Optional query param: `from_ts` (ISO datetime) — scopes all volume metrics to events at or
-after this time, used for the dashboard's 12h/24h/3d/7d/30d/60d/90d range toggle. Omit it to get
-the server's default (last 24h for most fields).
+after this time, used for the dashboard's 12h/24h/3d/7d/30d/60d/90d range toggle. Omit it and
+every field below is **all-time** (all events ever recorded), not a rolling window — the one
+exception is `hourly_activity`, which defaults to the last 24h specifically when `from_ts` is
+omitted (see `get_stats()` in `server/database.py`).
 
 Response:
 ```json

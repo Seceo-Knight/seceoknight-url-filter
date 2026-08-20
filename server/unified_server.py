@@ -21,7 +21,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -172,14 +172,12 @@ def restore_blocklist_rule(rule_id: int):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/logs", tags=["Logs"], status_code=202)
-async def receive_log(payload: dict):
+async def receive_log(payload: dict, request: Request):
     """
-    Accepts a single log entry (JSON) from to-server.py.
-    Saves to SQLite, updates endpoint record, and pushes
+    Accepts a single log entry (JSON) from to-server.py or the Chrome
+    extension. Saves to SQLite, updates endpoint record, and pushes
     high-severity events to the dashboard via WebSocket.
     """
-    payload["raw_log"] = json.dumps(payload)
-
     # Normalise event field
     event_type = payload.get("event", payload.get("event_type", "unknown"))
     blocked    = bool(payload.get("blocked", False))
@@ -189,15 +187,30 @@ async def receive_log(payload: dict):
     payload.setdefault("block_type", payload.get("block_type", ""))
     payload.setdefault("block_rule", payload.get("block_rule", ""))
 
+    # Resolve the real endpoint IP. The Python agent self-reports a real
+    # endpoint_ip (via a UDP-socket trick, see to-server.py), which we trust
+    # as-is. The Chrome extension can't do that from JavaScript and sends the
+    # placeholder "extension" instead -- for that case (and anything else
+    # that didn't send a usable IP), fall back to request.client.host, the
+    # real TCP-connection source IP as seen by uvicorn. Without this,
+    # extension-originated events were permanently unattributable to any
+    # specific machine, which is why per-endpoint AI-detection stats didn't
+    # work.
+    _skip = {"", "extension", "unknown"}
+    reported_ip = payload.get("endpoint_ip", "") or payload.get("client_ip", "")
+    if reported_ip in _skip or reported_ip.startswith("ext"):
+        reported_ip = request.client.host if request.client else ""
+        payload["endpoint_ip"] = reported_ip
+
+    payload["raw_log"] = json.dumps(payload)
+
     # Save event
     db.insert_event(payload)
 
-    # Update endpoint stats (use endpoint_ip if available, else client_ip)
-    # Skip non-IP values like "extension" (Chrome ext) or empty strings
-    client_ip = payload.get("endpoint_ip", "") or payload.get("client_ip", "")
+    # Update endpoint stats
+    client_ip = reported_ip
     hostname  = payload.get("endpoint_hostname", "")
-    _skip = {"", "extension", "unknown"}
-    if client_ip and client_ip not in _skip and not client_ip.startswith("ext"):
+    if client_ip and client_ip not in _skip:
         db.upsert_endpoint(client_ip, hostname=hostname, blocked=blocked)
 
     # Push to dashboard if it's a threat
@@ -362,6 +375,57 @@ def get_endpoint_detail(ip: str):
         conn.close()
 
 
+@app.get("/api/my-stats", tags=["Dashboard"])
+def get_my_stats(request: Request):
+    """
+    "This machine's own" stats, for the Chrome extension popup -- NOT the
+    fleet-wide /api/stats. That endpoint aggregates across every deployed
+    endpoint with no time or machine filter (its default is genuinely
+    all-time, not "last 24h" -- see get_stats() in database.py), which made
+    the extension popup show numbers indistinguishable from the whole
+    company's activity rather than the one machine it's running on.
+
+    Identifies "this machine" from request.client.host (the real TCP source
+    IP as seen by uvicorn) rather than trusting a client-supplied IP, since
+    a browser extension can't reliably self-report its own LAN address and
+    a self-reported value could be spoofed anyway.
+    """
+    caller_ip = request.client.host if request.client else ""
+    conn = db.get_connection()
+    try:
+        ep = conn.execute(f"""
+            SELECT id, ip, hostname, last_seen, total_requests, total_blocked,
+                   agent_version, {_ENDPOINT_STATUS_CASE}
+            FROM endpoints WHERE ip=?
+        """, (caller_ip,)).fetchone()
+
+        ai_phish = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE (endpoint_ip=? OR client_ip=?) AND event_type='ai_phishing'",
+            (caller_ip, caller_ip)
+        ).fetchone()[0]
+        ai_malware = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE (endpoint_ip=? OR client_ip=?) AND event_type='ai_malware'",
+            (caller_ip, caller_ip)
+        ).fetchone()[0]
+
+        if not ep:
+            # This machine hasn't sent any agent traffic yet (e.g. extension
+            # installed before the Windows services, or first run) -- return
+            # zeros instead of a 404 so the popup still renders cleanly.
+            return {
+                "ip": caller_ip, "hostname": "", "status": "unknown",
+                "total_requests": 0, "total_blocked": 0,
+                "ai_phishing": ai_phish, "ai_malware": ai_malware,
+            }
+
+        result = dict(ep)
+        result["ai_phishing"] = ai_phish
+        result["ai_malware"]  = ai_malware
+        return result
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AI PREDICTIONS  — Chrome extension calls these
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -376,11 +440,21 @@ class MalwareRequest(BaseModel):
 
 
 @app.post("/predict/phishing", tags=["AI"])
-async def predict_phishing(req: PhishingRequest):
+async def predict_phishing(req: PhishingRequest, request: Request):
     result = ai.predict_phishing(req.url)
 
     # If phishing detected, log it and alert dashboard
     if result.get("phishing"):
+        # The Chrome extension can't reliably know its own LAN IP from
+        # JavaScript, so it doesn't send one -- previously this left
+        # client_ip as an empty string, meaning AI-detected phishing events
+        # could never be attributed back to the machine that triggered them
+        # (no per-endpoint breakdown, no way to answer "did MY machine see
+        # anything?"). request.client.host is the real TCP-connection source
+        # IP as seen by uvicorn -- since the extension and agent both talk
+        # to port 5001 directly (not through Nginx), this correctly reflects
+        # the calling endpoint's real LAN IP.
+        caller_ip = request.client.host if request.client else ""
         event = {
             "event_type":   "ai_phishing",
             "event":        "ai_phishing",
@@ -392,7 +466,8 @@ async def predict_phishing(req: PhishingRequest):
             "block_type":   "ai_phishing",
             "ai_score":     result.get("score"),
             "threat_level": "High",
-            "client_ip":    "",   # Chrome ext doesn't send IP — filled server-side
+            "client_ip":    caller_ip,
+            "endpoint_ip":  caller_ip,
         }
         db.insert_event(event)
         await ws_manager.broadcast({
@@ -408,17 +483,18 @@ async def predict_phishing(req: PhishingRequest):
 
 
 @app.get("/predict/phishing", tags=["AI"])
-async def predict_phishing_get(url: str = Query(...)):
-    return await predict_phishing(PhishingRequest(url=url))
+async def predict_phishing_get(request: Request, url: str = Query(...)):
+    return await predict_phishing(PhishingRequest(url=url), request)
 
 
 @app.post("/predict/malware", tags=["AI"])
-async def predict_malware(req: MalwareRequest):
+async def predict_malware(req: MalwareRequest, request: Request):
     result = ai.predict_malware(req.image, req.model)
 
     # If malware detected, log it and alert dashboard
     if result.get("is_malware"):
         top = result.get("top_prediction", {})
+        caller_ip = request.client.host if request.client else ""
         event = {
             "event_type":    "ai_malware",
             "event":         "ai_malware",
@@ -430,7 +506,8 @@ async def predict_malware(req: MalwareRequest):
             "malware_family": top.get("malware_type", ""),
             "ai_score":      top.get("confidence"),
             "threat_level":  result.get("threat_level", "High"),
-            "client_ip":     "",
+            "client_ip":     caller_ip,
+            "endpoint_ip":   caller_ip,
         }
         db.insert_event(event)
         await ws_manager.broadcast({

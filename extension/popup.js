@@ -33,8 +33,14 @@ async function loadStatus() {
     });
     const health = await healthRes.json();
 
-    // Fetch stats
-    const statsRes = await fetch(`${apiBase}/api/stats`, {
+    // Fetch THIS MACHINE's own stats -- NOT /api/stats, which is fleet-wide
+    // (every deployed endpoint combined) and, by default, all-time rather
+    // than any recent window. Showing that in a per-machine popup makes the
+    // numbers look identical on every endpoint regardless of that machine's
+    // actual activity, which is misleading in a multi-endpoint deployment.
+    // /api/my-stats identifies "this machine" server-side from the request's
+    // own source IP, so there's nothing to configure here.
+    const statsRes = await fetch(`${apiBase}/api/my-stats`, {
       signal: AbortSignal.timeout(4000)
     });
     const stats = await statsRes.json();
@@ -52,7 +58,7 @@ async function loadStatus() {
       : "✗ malware";
     document.getElementById("info-models").textContent = `${phishing}, ${malware}`;
 
-    // Stats — field names match server/database.py's get_stats()
+    // Stats — this machine only, cumulative since the agent was installed
     document.getElementById("stat-blocks").textContent =
       (stats.total_blocked ?? 0).toLocaleString();
     document.getElementById("stat-ai").textContent =

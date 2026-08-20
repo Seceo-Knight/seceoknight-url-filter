@@ -186,9 +186,10 @@ Returns aggregated statistics for dashboard charts and KPI cards.
 
 **Query params:**
 - `from_ts` (ISO datetime string, optional) — scopes all volume metrics (totals, top domains,
-  hourly activity, block-type breakdown) to events at or after this time. Omit for the server's
-  default window (last 24h for most fields). Used to power the 12h/24h/3d/7d/30d/60d/90d
-  time-range toggle on the dashboard.
+  hourly activity, block-type breakdown) to events at or after this time. Omit it and every
+  field below is **all-time** (every event ever recorded), not a rolling window — the one
+  exception is `hourly_activity`, which defaults to the last 24h specifically when `from_ts`
+  is omitted. Used to power the 12h/24h/3d/7d/30d/60d/90d time-range toggle on the dashboard.
 
 **Response:**
 ```json
@@ -295,6 +296,32 @@ upserting by IP alone.
 ```json
 {"received": true}
 ```
+
+### GET /api/my-stats
+Returns stats for **the calling machine only** — used by the Chrome extension popup. Unlike
+`/api/stats` (fleet-wide, all-time by default), this identifies "which machine" from the
+request's own source IP (`request.client.host`), not a client-supplied value — a browser
+extension can't reliably know its own LAN IP from JavaScript, and a self-reported value could
+be spoofed anyway.
+
+**Response:**
+```json
+{
+  "id": 1,
+  "ip": "192.168.1.101",
+  "hostname": "DESKTOP-A1B2C3",
+  "last_seen": "2024-01-01T10:05:00",
+  "total_requests": 520,
+  "total_blocked": 8,
+  "agent_version": "1.1.0",
+  "status": "active",
+  "ai_phishing": 3,
+  "ai_malware": 0
+}
+```
+If the calling machine hasn't sent any agent traffic yet, returns `total_requests`/`total_blocked`
+as `0` and `status: "unknown"` instead of a 404, so the popup still renders cleanly on a
+fresh install.
 
 ---
 
