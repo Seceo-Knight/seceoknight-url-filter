@@ -143,10 +143,14 @@ Download-File "$RepoBase/agent.py"           $AgentPath
 Download-File "$RepoBase/to-server.py"       $ToServerPath
 Download-File "$RepoBase/malware_watcher.py" $MalwareWatcherPath
 
-# Patch server IP into all agent files
-(Get-Content $AgentPath           -Raw) -replace '192\.168\.1\.\d+', $ServerIP | Set-Content $AgentPath           -Encoding UTF8
-(Get-Content $ToServerPath        -Raw) -replace '192\.168\.1\.\d+', $ServerIP | Set-Content $ToServerPath        -Encoding UTF8
-(Get-Content $MalwareWatcherPath  -Raw) -replace '192\.168\.1\.\d+', $ServerIP | Set-Content $MalwareWatcherPath  -Encoding UTF8
+# Patch server IP into all agent files. Matches SERVER_IP = "<any IPv4>" specifically
+# (not any IPv4-looking string anywhere in the file) so it works regardless of which
+# subnet the server currently lives on -- not just 192.168.1.x.
+$ServerIpPattern = 'SERVER_IP\s*=\s*"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"'
+$ServerIpReplace = "SERVER_IP    = `"$ServerIP`""
+(Get-Content $AgentPath           -Raw) -replace $ServerIpPattern, $ServerIpReplace | Set-Content $AgentPath           -Encoding UTF8
+(Get-Content $ToServerPath        -Raw) -replace $ServerIpPattern, $ServerIpReplace | Set-Content $ToServerPath        -Encoding UTF8
+(Get-Content $MalwareWatcherPath  -Raw) -replace $ServerIpPattern, $ServerIpReplace | Set-Content $MalwareWatcherPath  -Encoding UTF8
 Write-Ok "Server IP set to $ServerIP in all agent files"
 
 # =============================================================================

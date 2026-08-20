@@ -5,12 +5,16 @@
 // SecEoKnight AI phishing detection API. No latency on normal browsing —
 // the check runs async AFTER the page starts loading.
 //
-// Change API_BASE below if your server IP is different from 192.168.1.189
+// Server address is NOT hardcoded — it's read from chrome.storage.local
+// (serverIP / serverPort), which the user sets from the extension popup.
+// This means deploying to a different office/network with a different
+// server IP never requires editing this file: just open the popup, type
+// the new address, click Save. Falls back to DEFAULT_SERVER_IP/PORT below
+// if nothing has been configured yet (fresh install).
 // =============================================================================
 
-const API_BASE          = "http://192.168.1.63:5001";
-const PHISHING_ENDPOINT = `${API_BASE}/predict/phishing`;
-const LOGS_ENDPOINT     = `${API_BASE}/logs`;
+const DEFAULT_SERVER_IP   = "192.168.1.63";
+const DEFAULT_SERVER_PORT = 5001;
 
 // Confidence threshold — above this the warning banner is shown
 const WARN_THRESHOLD  = 0.80;   // 80% → yellow warning banner
@@ -27,9 +31,19 @@ const WHITELIST = new Set([
   "github.com", "www.github.com",
   "apple.com", "www.apple.com",
   "amazon.com", "www.amazon.com",
-  "cloudflare.com",
-  "192.168.1.189"
+  "cloudflare.com"
+  // Note: LAN IPs (192.168.*, 10.*, 172.16-31.*) are already exempted by the
+  // shouldSkip() regex check below — no need to whitelist the server IP here.
 ]);
+
+// ── Server address (configurable, not hardcoded) ────────────────────────────
+
+async function getApiBase() {
+  const cfg = await chrome.storage.local.get(["serverIP", "serverPort"]);
+  const ip   = cfg.serverIP   || DEFAULT_SERVER_IP;
+  const port = cfg.serverPort || DEFAULT_SERVER_PORT;
+  return `http://${ip}:${port}`;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -66,7 +80,8 @@ async function checkPhishing(url) {
   if (cached) return cached;
 
   try {
-    const res = await fetch(PHISHING_ENDPOINT, {
+    const apiBase = await getApiBase();
+    const res = await fetch(`${apiBase}/predict/phishing`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ url }),
@@ -151,8 +166,9 @@ function injectWarningBanner(url, confidence, level) {
 
 async function logEvent(url, confidence, tabId) {
   try {
+    const apiBase = await getApiBase();
     const tab = await chrome.tabs.get(tabId).catch(() => null);
-    await fetch(LOGS_ENDPOINT, {
+    await fetch(`${apiBase}/logs`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -213,13 +229,20 @@ chrome.downloads.onCreated.addListener((item) => {
   console.log(`[SecEoKnight] Download: ${item.filename} from ${item.finalUrl || item.url}`);
 });
 
-// ── Storage: persist server config ───────────────────────────────────────────
+// ── Storage: seed default server config on first install only ──────────────
+// Important: onInstalled also fires on extension UPDATES, not just fresh
+// installs. We must not clobber a server address the user already configured
+// via the popup just because the extension was updated to a new version.
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({
-    serverIP:   "192.168.1.63",
-    serverPort: 5001,
-    enabled:    true
-  });
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason !== "install") return;
+  const existing = await chrome.storage.local.get(["serverIP", "serverPort"]);
+  if (!existing.serverIP) {
+    await chrome.storage.local.set({
+      serverIP:   DEFAULT_SERVER_IP,
+      serverPort: DEFAULT_SERVER_PORT,
+      enabled:    true
+    });
+  }
   console.log("[SecEoKnight] Extension installed and active.");
 });

@@ -9,7 +9,7 @@ Run once after first server deployment:
 
 Examples:
     python3 scripts/add_default_blocklist.py
-    python3 scripts/add_default_blocklist.py 192.168.1.189 5001
+    python3 scripts/add_default_blocklist.py 192.168.1.63 5001
 """
 
 import sys

@@ -6,7 +6,7 @@
 # Usage:
 #   bash scripts/health_check.sh [SERVER_IP] [PORT]
 #   bash scripts/health_check.sh                     # defaults to 127.0.0.1:5001
-#   bash scripts/health_check.sh 192.168.1.189 5001
+#   bash scripts/health_check.sh 192.168.1.63 5001
 # =============================================================================
 
 SERVER="${1:-127.0.0.1}"

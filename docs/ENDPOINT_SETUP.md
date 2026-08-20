@@ -267,11 +267,10 @@ Both now run silently in the background — no windows to keep open.
 4. Select the `extension/` folder from the repo root
 5. The SecEoKnight extension icon appears in Chrome toolbar ✓
 
-If your server IP differs from `192.168.1.63`, open `extension/background.js` and update line 1:
-```javascript
-const API_BASE = "http://YOUR_SERVER_IP:5001";
-```
-Then reload the extension in `chrome://extensions/` → click the refresh icon on the SecEoKnight card.
+If your server IP differs from `192.168.1.63`, no file editing needed — click the SecEoKnight
+icon in the Chrome toolbar → **⚙ Change Server** → enter the correct IP and port →
+**Save & Reconnect**. This is stored per-machine in the browser's own settings
+(`chrome.storage.local`), read by `background.js`/`popup.js` at runtime.
 
 ---
 

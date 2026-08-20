@@ -85,6 +85,53 @@
     }
 
     #loading { padding: 20px; text-align: center; color: #8899aa; }
+
+    .settings-toggle {
+      width: 100%;
+      background: none;
+      border: none;
+      color: #4fc3f7;
+      font-size: 12px;
+      text-align: left;
+      padding: 4px 0;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .settings-panel { display: none; margin-top: 8px; }
+    .settings-panel label {
+      display: block;
+      font-size: 11px;
+      color: #8899aa;
+      margin-top: 8px;
+      margin-bottom: 3px;
+    }
+    .settings-panel input {
+      width: 100%;
+      background: #0f1729;
+      border: 1px solid #2a3a55;
+      color: #e0e0e0;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: monospace;
+      box-sizing: border-box;
+    }
+    .settings-panel input:focus { outline: none; border-color: #4fc3f7; }
+    .settings-save {
+      width: 100%;
+      margin-top: 10px;
+      background: #2ecc71;
+      border: none;
+      color: #0f1729;
+      font-weight: bold;
+      padding: 7px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .settings-save:hover { background: #27ae60; }
+    .settings-status { font-size: 11px; margin-top: 6px; min-height: 14px; }
   </style>
 </head>
 <body>
@@ -123,9 +170,19 @@
     <div class="section">
       <div class="section-title">Server</div>
       <div class="server-info">
-        IP: <span id="info-ip">192.168.1.189</span><br>
-        Port: <span id="info-port">5001</span><br>
+        IP: <span id="info-ip">—</span><br>
+        Port: <span id="info-port">—</span><br>
         AI Models: <span id="info-models">—</span>
+      </div>
+
+      <button class="settings-toggle" id="settings-toggle">⚙ Change Server ▾</button>
+      <div class="settings-panel" id="settings-panel">
+        <label for="settings-ip">Server IP or hostname</label>
+        <input type="text" id="settings-ip" placeholder="192.168.1.63">
+        <label for="settings-port">Port</label>
+        <input type="text" id="settings-port" placeholder="5001">
+        <button class="settings-save" id="settings-save">Save &amp; Reconnect</button>
+        <div class="settings-status" id="settings-status"></div>
       </div>
     </div>
 

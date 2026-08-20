@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SecEoKnight Security Extension",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI-powered phishing and malware detection. Protects users by checking every page against the SecEoKnight security server.",
 
   "permissions": [

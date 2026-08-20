@@ -14,6 +14,10 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
 | **Malware Scanner** | Each Windows endpoint | Watches Downloads folder, scans new files with AI CNN model, quarantines detected malware |
 | **SIEM Dashboard** | Separate server *(built later)* | Shows alerts, events, stats, blocklist management |
 
+> Setting this up somewhere you've already deployed it before, with a different server IP?
+> Skip straight to [Deploying to a New Office / Different Server IP](#deploying-to-a-new-office--different-server-ip)
+> — it's just 3 places to update, not a full redo of everything below.
+
 ---
 
 ## Network Architecture
@@ -76,41 +80,7 @@ Open a terminal (or SSH into the server) and run all commands below.
 
 ---
 
-## Step 2 — Update the System
-
-```bash
-sudo apt update && sudo apt upgrade -y
-```
-
-Wait for it to finish. This updates all system packages.
-
----
-
-## Step 3 — Install Required System Packages
-
-```bash
-sudo apt install -y python3 python3-venv python3-dev python3-pip nginx git sqlite3
-```
-
-Verify Python installed correctly:
-```bash
-python3 --version
-```
-You should see: `Python 3.12.x` (Ubuntu 24.04's default — TensorFlow 2.16.1 supports up to 3.12, so no special version is needed).
-
-> Note: earlier revisions of this guide called for `python3.11` and `git-lfs`. Ubuntu 24.04 doesn't ship `python3.11` in its default repos, and the AI model files in this repo are committed as regular files (not Git LFS pointers), so `git-lfs` isn't required either — plain `python3` and `git` are enough.
-
----
-
-## Step 4 — (Skipped)
-
-The AI model files (`server/models/malware/*.keras`) are committed to this repo as regular
-Git objects, not Git LFS pointers — a plain `git clone` in Step 6 downloads them along with
-everything else. No separate LFS step is needed.
-
----
-
-## Step 5 — Push This Project to Your GitHub
+## Step 2 — Push This Project to Your GitHub
 
 **Do this from your Mac/PC (not the server).**
 
@@ -131,7 +101,7 @@ git push -u origin main
 
 ---
 
-## Step 6 — Clone the Repo on the Server
+## Step 3 — Clone the Repo on the Server
 
 ```bash
 sudo mkdir -p /opt/seceoknight
@@ -141,7 +111,8 @@ cd /opt/seceoknight
 git clone https://github.com/Seceo-Knight/seceoknight-url-filter.git .
 ```
 
-Confirm the malware models came down as real files:
+Confirm the malware models came down as real files (they're committed as regular Git objects,
+not Git LFS pointers, so a plain clone downloads everything with no extra step):
 ```bash
 ls -lh server/models/malware/
 ```
@@ -149,159 +120,30 @@ Expected: CNN.keras (~2 MB), ViT.keras (~7 MB), 1D-CNN-LSTM.keras (~6 MB)
 
 ---
 
-## Step 7 — Create Python Virtual Environment
+## Step 4 — Run the Installer
+
+Everything else — system packages, Python environment, training the phishing model,
+the auto-start service, Nginx, the firewall, and the default blocklist — is one command:
 
 ```bash
-cd /opt/seceoknight
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+sudo bash scripts/install.sh
 ```
 
-> ⏳ TensorFlow installation takes 5–10 minutes. This is normal.
+This takes 10–20 minutes the first time (most of it is TensorFlow installing and the
+phishing model training) — the script prints progress for each step as it goes, and tells
+you exactly what to run if any step fails. It's also safe to re-run any time (after a
+`git pull`, for example) — it checks what's already done and skips it rather than redoing
+work or duplicating data.
+
+If you'd rather understand or run each underlying step yourself instead of using the
+script, they're documented individually in [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md).
+
+When it finishes, it prints your server's detected LAN IP and a few `curl` commands to
+verify everything's running — run those now before moving on to Part 2.
 
 ---
 
-## Step 8 — Train the Phishing Detection Model
-
-The malware models are pre-trained and already downloaded. The phishing model must be
-trained once from the included dataset:
-
-```bash
-cd /opt/seceoknight
-source venv/bin/activate
-python3 scripts/train_phishing_model.py
-```
-
-> ⏳ This takes 5–15 minutes depending on your hardware.
-> It trains on 95,980 real phishing/safe domain samples.
-
-When finished you will see:
-```
-✅  Training complete. Restart seceoknight service to load the new model.
-```
-
-Verify the model files were created:
-```bash
-ls -lh server/models/phishing/
-```
-Expected: `bilstm_domain_model.h5` and `tokenizer.pkl`
-
----
-
-## Step 9 — Test the Server (Manual Start)
-
-```bash
-cd /opt/seceoknight/server
-source /opt/seceoknight/venv/bin/activate
-uvicorn unified_server:app --host 0.0.0.0 --port 5001
-```
-
-Open a browser on any computer on your LAN and go to:
-```
-http://192.168.1.63:5001/health
-```
-
-You should see:
-```json
-{
-  "status": "healthy",
-  "ai": {
-    "phishing_model": "loaded",
-    "malware_models": { "CNN": "loaded", "ViT": "loaded", "1D-CNN-LSTM": "loaded" }
-  }
-}
-```
-
-Press `Ctrl+C` to stop the test server.
-
----
-
-## Step 10 — Install as Auto-Start Service
-
-The server must start automatically every time Ubuntu boots.
-
-```bash
-# Copy the service file
-sudo cp /opt/seceoknight/systemd/seceoknight.service /etc/systemd/system/
-
-# The shipped file runs the service as User=root. That's not required —
-# the server only needs to bind port 5001 and read/write /opt/seceoknight,
-# so for defense-in-depth you can run it as a dedicated non-root user instead:
-#   sudo useradd -r -s /usr/sbin/nologin seceoknight
-#   sudo chown -R seceoknight:seceoknight /opt/seceoknight
-#   sudo nano /etc/systemd/system/seceoknight.service
-#   # Change:  User=root   →   User=seceoknight
-# If you skip this, the service simply runs as root — functional, just not least-privilege.
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable seceoknight
-sudo systemctl start seceoknight
-
-# Confirm it is running
-sudo systemctl status seceoknight
-```
-
-You should see `Active: active (running)` in green.
-
----
-
-## Step 11 — Configure Nginx (Port 80 Reverse Proxy)
-
-Nginx sits in front of the server so endpoints connect on port 80 instead of 5001.
-
-```bash
-# Copy the ready-made nginx config from the repo
-sudo cp /opt/seceoknight/nginx/seceoknight.conf /etc/nginx/sites-available/seceoknight
-
-# Enable it
-sudo ln -s /etc/nginx/sites-available/seceoknight /etc/nginx/sites-enabled/seceoknight
-
-# Remove the default nginx page
-sudo rm -f /etc/nginx/sites-enabled/default
-
-# Test config and reload
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-You should see: `nginx: configuration file test is successful`
-
----
-
-## Step 12 — Open the Firewall
-
-```bash
-sudo ufw allow 22/tcp       # SSH (keep this — otherwise you get locked out)
-sudo ufw allow 80/tcp       # Nginx (endpoints + dashboard use this)
-sudo ufw allow 5001/tcp     # Direct API access (for testing)
-sudo ufw enable
-```
-
-Confirm:
-```bash
-sudo ufw status
-```
-
----
-
-## Step 13 — Seed the Default Blocklist
-
-Populate the blocklist with enterprise-ready rules (social media, gambling, piracy, malware):
-
-```bash
-cd /opt/seceoknight
-source venv/bin/activate
-python3 scripts/add_default_blocklist.py
-```
-
-You should see 30+ rules added in green.
-
----
-
-## Step 14 — Managing the Blocklist (Add / Remove / Update Rules)
+## Step 5 — Managing the Blocklist (Add / Remove / Update Rules)
 
 Run all commands on the Ubuntu server. Endpoints pick up changes within 30 seconds automatically.
 
@@ -377,7 +219,7 @@ curl -X PUT http://localhost:5001/api/blocklist/1/restore
 
 ---
 
-## Step 15 — Run Full Health Check
+## Step 6 — Run Full Health Check
 
 ```bash
 bash /opt/seceoknight/scripts/health_check.sh
@@ -412,18 +254,26 @@ Each Windows machine needs: mitmproxy (intercepts traffic) + to-server.py (sends
 
 Run this on each Windows machine. The script does everything automatically.
 
-### Step 1 — Update setup.ps1 with Your GitHub Username
+### Step 1 — Set Your GitHub Username and Server IP
 
-Before running the script on any machine, open `endpoint/setup.ps1` in the repo and find:
+Before running the script on any machine, open `endpoint/setup.ps1` in the repo and check
+two lines near the top:
+```powershell
+$ServerIP = "192.168.1.63"      # <-- your security server's IP (Part 1's install.sh prints this)
+```
 ```powershell
 $RepoBase = "https://raw.githubusercontent.com/Seceo-Knight/seceoknight-url-filter/main/endpoint"
 ```
-Replace `Seceo-Knight` with your actual GitHub username, then push to GitHub:
+Set `$ServerIP` to whatever IP `install.sh` printed at the end of Part 1 (only needs
+changing if you're not using the default `192.168.1.63`), and replace `Seceo-Knight` in
+`$RepoBase` with your actual GitHub username. Then push:
 ```bash
 git add endpoint/setup.ps1
-git commit -m "Set GitHub username in setup.ps1"
+git commit -m "Set server IP and GitHub username in setup.ps1"
 git push
 ```
+`setup.ps1` automatically writes this IP into `agent.py`, `to-server.py`, and
+`malware_watcher.py` on every machine it runs on — you only ever set it in this one place.
 
 ### Step 2 — On Each Windows Machine
 
@@ -642,18 +492,17 @@ appears on the page and the alert is logged on the security server.
 
 Install this on each endpoint after Part 2.
 
-### Step 1 — Confirm Server Address (Usually No Change Needed)
+### Step 1 — Install on Each Windows Machine
 
-Open `extension/background.js` and check this line near the top:
-```javascript
-const API_BASE = "http://192.168.1.63:5001";
-```
-If your server IP is `192.168.1.63` (the default), leave it as-is. If different, update it here.
+No file editing needed — the server address is set from the extension's own popup after
+install (Step 2), not by hand-editing JavaScript. On each Windows machine:
 
-### Step 2 — Install on Each Windows Machine
-
-1. Copy the `extension/` folder from the repo to the Windows machine
-   (or clone the repo there)
+1. Get the extension files onto the machine (PowerShell, no admin needed):
+   ```powershell
+   Invoke-WebRequest -Uri "https://github.com/Seceo-Knight/seceoknight-url-filter/archive/refs/heads/main.zip" -OutFile "$env:TEMP\seceoknight.zip"
+   Expand-Archive "$env:TEMP\seceoknight.zip" "$env:TEMP\seceoknight-repo" -Force
+   ```
+   That gives you `%TEMP%\seceoknight-repo\seceoknight-url-filter-main\extension\`.
 
 2. Open **Google Chrome**
 
@@ -663,9 +512,24 @@ If your server IP is `192.168.1.63` (the default), leave it as-is. If different,
 
 5. Click **Load unpacked**
 
-6. Select the `extension/` folder from the repo
+6. Select that `extension` folder
 
 7. The **SecEoKnight** shield icon appears in the Chrome toolbar ✓
+
+> This is fine for testing on one or a few machines. For rolling out to all 50 endpoints,
+> package the extension as a signed `.crx` and push it via Group Policy's
+> `ExtensionInstallForcelist` instead — no Developer Mode or per-machine clicking needed.
+
+### Step 2 — Set the Server Address
+
+Click the SecEoKnight icon in the Chrome toolbar → **⚙ Change Server** → enter your
+server's IP (or hostname) and port → **Save & Reconnect**. This is stored per-machine in
+the browser's own settings — it's the only place the server address lives for the
+extension, and it's why deploying to a different office never requires editing
+`background.js` or `popup.js` by hand.
+
+On first install, it defaults to `192.168.1.63:5001` — if that's already your server's
+address, you can skip this step entirely.
 
 ### Step 3 — Verify It Works
 
@@ -729,6 +593,45 @@ You should see recent events including the `facebook.com` block attempt.
 http://192.168.1.63/api/stats
 ```
 `total_requests` should be increasing as endpoints browse.
+
+---
+
+---
+
+# Deploying to a New Office / Different Server IP
+
+Setting this up again somewhere else — a new office, a new network, a server that got a
+different IP than last time? Everything in this system gets its server address from
+exactly **three** places. Update these three and nothing else needs to change:
+
+| # | Where | What to change | Applies to |
+|---|---|---|---|
+| 1 | `install.sh` | Nothing — the server doesn't need to know its own IP. It just binds to all network interfaces. | The server itself |
+| 2 | `endpoint/setup.ps1`, top of the file | `$ServerIP = "..."` — one line, before running the script on any endpoint | All 50 Windows machines |
+| 3 | Chrome extension popup, on each machine | Click the icon → **⚙ Change Server** → type the new IP → Save | The Chrome extension |
+
+**Nothing else needs editing.** Specifically:
+- `nginx/seceoknight.conf` doesn't reference an IP at all (`server_name _;` accepts any).
+- `agent.py`, `to-server.py`, and `malware_watcher.py` don't need hand-editing — `setup.ps1`
+  automatically writes the IP from step 2 into all three of them on every machine it runs on.
+- The extension's `background.js`/`popup.js` don't need hand-editing or reloading — the
+  address is stored in the browser's own settings (`chrome.storage.local`), set once per
+  machine from the popup in step 3.
+
+**Practical order of operations for a fresh office:**
+1. Provision the new Ubuntu server, clone the repo, run `sudo bash scripts/install.sh` (Part 1).
+   It prints the detected LAN IP at the end — that's your new server address.
+2. Edit `$ServerIP` in `endpoint/setup.ps1` to that address, commit, push to GitHub (Part 2,
+   Option A Step 1).
+3. Run `setup.ps1` on each Windows machine as usual (Part 2) — the new IP is baked in
+   automatically.
+4. Install the Chrome extension as usual (Part 3) — if the new IP isn't `192.168.1.63`
+   (the shipped default), open the popup once per machine and set it via **⚙ Change Server**.
+
+**If you don't have a fixed IP at all** (e.g. the server gets a new DHCP-assigned address
+on every reboot), the real fix is giving it a static IP or DNS hostname at the network
+level — this system has no way to "auto-discover" a server that keeps moving without one
+of those, the same as any other client-server application.
 
 ---
 
