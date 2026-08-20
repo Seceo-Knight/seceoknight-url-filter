@@ -108,9 +108,29 @@ sed "s|/opt/seceoknight|$INSTALL_DIR|g" "$INSTALL_DIR/systemd/seceoknight.servic
 systemctl daemon-reload
 systemctl enable seceoknight >/dev/null 2>&1
 systemctl restart seceoknight
-sleep 2
-if systemctl is-active --quiet seceoknight; then
-    ok "seceoknight service is running"
+
+# Wait for the HTTP server to actually be ready, not just for the process to
+# exist. `systemctl is-active` goes true as soon as the process launches --
+# but loading the phishing model + 3 malware models into memory can take
+# well over the few seconds it takes systemd to consider the unit "started",
+# so anything that immediately curls the server (like blocklist seeding
+# below) can hit "connection refused" even though the service is technically
+# "running". Poll /health instead, up to 90 seconds.
+READY=0
+for i in $(seq 1 45); do
+    if curl -sf http://127.0.0.1:5001/health >/dev/null 2>&1; then
+        READY=1
+        break
+    fi
+    sleep 2
+done
+
+if [ "$READY" -eq 1 ]; then
+    ok "seceoknight service is running and responding on /health"
+elif systemctl is-active --quiet seceoknight; then
+    warn "Process is running but /health didn't respond within 90s — AI models may still be"
+    warn "loading on slower hardware. Continuing, but the blocklist-seeding step below may fail;"
+    warn "if it does, just re-run: source venv/bin/activate && python3 scripts/add_default_blocklist.py"
 else
     err "seceoknight service failed to start — check: sudo journalctl -u seceoknight -n 50"
     LATEST_BACKUP="$(ls -t /etc/systemd/system/seceoknight.service.bak.* 2>/dev/null | head -1)"
