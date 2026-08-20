@@ -1,12 +1,12 @@
 # Server Setup Guide
 
-Step-by-step guide to deploy the SecEoKnight unified server on Ubuntu 22.04.
+Step-by-step guide to deploy the SecEoKnight unified server on Ubuntu 24.04.
 
 ## Requirements
 
-- Ubuntu 22.04 LTS (fresh install recommended)
+- Ubuntu 24.04 LTS (fresh install recommended)
 - Minimum 8 GB RAM, 4 CPU cores, 100 GB SSD
-- Static LAN IP (e.g. 192.168.1.189)
+- Static LAN IP (e.g. 192.168.1.63)
 - Internet access for package installation
 
 ---
@@ -19,11 +19,11 @@ sudo apt update && sudo apt upgrade -y
 
 ---
 
-## Step 2 — Install Python 3.11
+## Step 2 — Install Python 3
 
 ```bash
-sudo apt install -y python3.11 python3.11-venv python3.11-dev python3-pip
-python3.11 --version   # should print Python 3.11.x
+sudo apt install -y python3 python3-venv python3-dev python3-pip
+python3 --version   # Ubuntu 24.04 ships Python 3.12.x — TensorFlow 2.16.1 supports up to 3.12
 ```
 
 ---
@@ -38,15 +38,11 @@ sudo systemctl start nginx
 
 ---
 
-## Step 4 — Install Git LFS
+## Step 4 — (Skipped — Git LFS not required)
 
-Git LFS stores the large AI model files (.h5, .keras, .pkl) and the training dataset (.csv).
-You must install LFS **before** cloning so the actual file contents are downloaded, not just pointers.
-
-```bash
-sudo apt install -y git-lfs
-git lfs install
-```
+The malware model files (`.keras`) and the training dataset (`.csv`) are committed to this repo
+as regular Git objects, not Git LFS pointers. A plain `git clone` in Step 5 downloads their full
+contents — no LFS install or `git lfs pull` needed.
 
 ---
 
@@ -57,9 +53,6 @@ sudo mkdir -p /opt/seceoknight
 sudo chown $USER:$USER /opt/seceoknight
 cd /opt/seceoknight
 git clone https://github.com/YOUR_GITHUB_USERNAME/seceoknight-url-filter.git .
-
-# Pull LFS objects (model files + training data)
-git lfs pull
 ```
 
 After cloning you should see real files (not tiny pointer files) in `server/models/malware/`.
@@ -70,7 +63,7 @@ After cloning you should see real files (not tiny pointer files) in `server/mode
 
 ```bash
 cd /opt/seceoknight
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -97,7 +90,8 @@ Outputs are automatically saved to `server/models/phishing/`:
 - `tokenizer.pkl`
 
 > You only need to run this once. The trained model files persist on disk.
-> If you push them back to GitHub via `git lfs push`, future deployments can skip this step.
+> If you commit them back to GitHub (`git add server/models/phishing/ && git commit && git push`),
+> future deployments can skip this step and just `git clone` the trained model directly.
 
 ---
 
@@ -105,7 +99,7 @@ Outputs are automatically saved to `server/models/phishing/`:
 
 Open `endpoint/agent.py` and `endpoint/to-server.py` and change:
 ```python
-SERVER_IP = "192.168.1.189"   # ← change to your actual server IP
+SERVER_IP = "192.168.1.63"   # ← change to your actual server IP
 ```
 
 The server itself (`server/unified_server.py`) does not need any IP changes — it listens on all interfaces.
@@ -137,9 +131,12 @@ Press `Ctrl+C` to stop.
 # Copy service file
 sudo cp /opt/seceoknight/systemd/seceoknight.service /etc/systemd/system/
 
-# Edit the service file if your username is not 'ubuntu'
-sudo nano /etc/systemd/system/seceoknight.service
-# Change: User=ubuntu   to your actual username
+# The shipped file runs the service as User=root (functional, but not least-privilege).
+# Optional hardening — run as a dedicated non-root user instead:
+#   sudo useradd -r -s /usr/sbin/nologin seceoknight
+#   sudo chown -R seceoknight:seceoknight /opt/seceoknight
+#   sudo nano /etc/systemd/system/seceoknight.service
+#   # Change:  User=root   →   User=seceoknight
 
 # Enable and start
 sudo systemctl daemon-reload
@@ -175,7 +172,7 @@ sudo systemctl reload nginx
 
 You should see: `nginx: configuration file /etc/nginx/nginx.conf test is successful`
 
-After this, endpoints can connect to `http://192.168.1.189/blocklist` (port 80, no :5001 needed).
+After this, endpoints can connect to `http://192.168.1.63/blocklist` (port 80, no :5001 needed).
 
 ---
 

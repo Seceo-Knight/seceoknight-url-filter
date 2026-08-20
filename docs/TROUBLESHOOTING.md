@@ -54,35 +54,49 @@ sudo systemctl restart seceoknight
 
 ### agent.py not blocking anything
 
-1. Check mitmproxy is running: look for the mitmproxy terminal window
+1. Check the proxy service is running: `Get-Service SecEoKnight-Proxy` — must show `Running`
+   (agent.py and mitmproxy run inside this one Windows Service now, no terminal window to look for)
 2. Check proxy is set in Windows: Settings → Network → Proxy
 3. Check blocklist: `curl http://YOUR_SERVER_IP:5001/blocklist`
-4. Check mitmproxy logs in its terminal window
+4. Check the service's log file: `C:\SecEoKnight\Logs\proxy.log` (or `proxy-error.log`)
 
 ### Endpoint not appearing in dashboard
 
-1. Check to-server.py is running (look for its terminal window)
-2. Check server is reachable from endpoint:
+1. Check the logger service is running: `Get-Service SecEoKnight-Logger` — must show `Running`
+   (to-server.py runs as this Windows Service; there's no terminal window to check anymore)
+2. Endpoint status is heartbeat-driven — even with zero browsing traffic, the endpoint should
+   still show `active` as long as `SecEoKnight-Logger` is running and can reach the server.
+   If it shows `inactive`, the heartbeat POST to `/api/heartbeat` isn't getting through — check
+   step 3 below.
+3. Check server is reachable from endpoint:
    ```powershell
-   Test-NetConnection -ComputerName 192.168.1.189 -Port 5001
+   Test-NetConnection -ComputerName 192.168.1.63 -Port 5001
    ```
-3. Check the log file exists: `C:\url-block\logs.json`
+4. Check the log file exists: `C:\url-block\logs.json`
 
 ### HTTPS sites showing SSL errors
 
-Certificate not installed correctly.
+Certificate not installed correctly, or the cert the browser trusts doesn't match the one the
+running proxy service presents (a `confdir` mismatch — this used to be the most common cause
+of "internet stopped working after setup" on this project).
 
-1. Open `certmgr.msc` (Windows Certificate Manager)
-2. Go to Trusted Root Certification Authorities → Certificates
-3. Look for "mitmproxy" certificate
-4. If missing: re-run the certificate installation step from `setup.ps1`
-
-### mitm.it not loading during certificate setup
-
-1. Make sure mitmproxy is running on port 8082
-2. Make sure Windows proxy is set to `127.0.0.1:8082`
-3. Close and reopen Chrome completely
-4. Try: `chrome.exe --proxy-server="127.0.0.1:8082"`
+1. Open PowerShell as Administrator and check:
+   ```powershell
+   Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*mitmproxy*" }
+   ```
+   If nothing prints, the cert isn't installed — re-run `setup.ps1` as Administrator.
+2. If a cert IS listed but HTTPS still fails, confirm `SecEoKnight-Proxy`'s NSSM `AppParameters`
+   include `--set confdir="C:\SecEoKnight\mitm-confdir"` (same path used to generate the cert
+   above) — check with:
+   ```powershell
+   & "C:\SecEoKnight\nssm.exe" get SecEoKnight-Proxy AppParameters
+   ```
+   If `confdir` is missing or points somewhere else, the service is presenting a *different*
+   CA than the one you trusted. Fix it with `nssm set SecEoKnight-Proxy AppParameters "..."`
+   (see `endpoint/setup.ps1` for the exact string) and restart the service.
+3. As a last resort, uninstall (see `docs/ENDPOINT_SETUP.md`'s removal steps) and re-run
+   `setup.ps1` fresh — current versions of the script keep certificate generation and the
+   service's `confdir` in sync automatically, so this class of bug shouldn't recur.
 
 ### Blocklist not updating on endpoint
 

@@ -23,7 +23,7 @@ Both services start automatically on every boot, run with no visible windows, an
 - Python 3.x installed — https://www.python.org/downloads/
   - ⚠️ During Python install: tick **"Add Python to PATH"**
 - Internet access (to download mitmproxy and NSSM)
-- Security server must already be running at `192.168.1.189`
+- Security server must already be running at `192.168.1.63`
 
 ### Steps
 
@@ -54,25 +54,26 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/s
 - Downloads `agent.py` and `to-server.py` from your GitHub
 - Downloads and installs mitmproxy
 - Downloads NSSM to `C:\SecEoKnight\nssm.exe`
-- Opens `http://mitm.it` — **you must install the certificate**
+- Generates a mitmproxy CA certificate (in a shared `C:\SecEoKnight\mitm-confdir\`) and
+  **automatically installs it** into the Windows Trusted Root store — no browser step
 - Installs `SecEoKnight-Proxy` as a Windows Service
 - Installs `SecEoKnight-Logger` as a Windows Service
 - Configures machine-wide proxy (WinHTTP + browser)
 - Starts both services
 
-**5. Install the certificate (critical — HTTPS blocking won't work without this)**
+**5. Certificate is installed automatically (critical — HTTPS blocking won't work without this,
+but there's nothing for you to do)**
 
-When the script opens `http://mitm.it`:
-1. Click **Windows**
-2. Download `mitmproxy-ca-cert.cer`
-3. Double-click the `.cer` file
-4. Click **Install Certificate**
-5. Select **Local Machine** → Next
-6. Select **Place all certificates in the following store**
-7. Click **Browse** → select **Trusted Root Certification Authorities** → OK
-8. Click **Next** → **Finish**
-9. You should see: *"The import was successful"*
-10. Return to PowerShell and press **Enter**
+`setup.ps1` briefly runs mitmproxy in the background with `--set confdir="C:\SecEoKnight\mitm-confdir"`
+to generate a CA cert, then imports it with `Import-Certificate -CertStoreLocation Cert:\LocalMachine\Root`
+and verifies the import by reading the cert back out of the store. You'll see:
+```
+Certificate installed and verified in Trusted Root (thumbprint: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX)
+```
+The same `--set confdir=...` flag is baked into `SecEoKnight-Proxy`'s permanent `AppParameters`,
+so the running service always presents the exact cert you just trusted — no mismatch, no
+"internet stopped working after setup." If verification fails, re-run the script as
+Administrator (cert import needs elevation).
 
 **6. Setup complete**
 
@@ -101,8 +102,8 @@ When the script opens `http://mitm.it`:
 
 Open PowerShell as Administrator:
 ```powershell
-sc query SecEoKnight-Proxy
-sc query SecEoKnight-Logger
+sc.exe query SecEoKnight-Proxy
+sc.exe query SecEoKnight-Logger
 ```
 
 Both should show: `STATE: 4 RUNNING`
@@ -116,21 +117,21 @@ Look for "SecEoKnight Proxy Agent" and "SecEoKnight Log Forwarder".
 ### Stop a Service
 
 ```powershell
-sc stop SecEoKnight-Proxy
-sc stop SecEoKnight-Logger
+sc.exe stop SecEoKnight-Proxy
+sc.exe stop SecEoKnight-Logger
 ```
 
 ### Start a Service
 
 ```powershell
-sc start SecEoKnight-Proxy
-sc start SecEoKnight-Logger
+sc.exe start SecEoKnight-Proxy
+sc.exe start SecEoKnight-Logger
 ```
 
 ### Restart a Service
 
 ```powershell
-sc stop SecEoKnight-Proxy && sc start SecEoKnight-Proxy
+sc.exe stop SecEoKnight-Proxy && sc.exe start SecEoKnight-Proxy
 ```
 
 ### View Service Logs
@@ -165,7 +166,7 @@ Create folder `C:\SecEoKnight\` and `C:\SecEoKnight\Logs\`, then copy into `C:\S
 - `agent.py` (from `endpoint/agent.py` in the repo)
 - `to-server.py` (from `endpoint/to-server.py` in the repo)
 
-Both files already have `SERVER_IP = "192.168.1.189"` — leave as-is if that is your server.
+Both files already have `SERVER_IP = "192.168.1.63"` — leave as-is if that is your server.
 
 Install the `requests` Python package:
 ```powershell
@@ -188,16 +189,29 @@ netsh winhttp set proxy "192.168.1.105:8082" "192.168.*;10.*;172.16.*;localhost"
 
 ### Step 4 — Install mitmproxy certificate
 
-Start a temporary proxy:
+Generate the CA into a shared confdir and import it directly — no browser or `mitm.it` step:
 ```powershell
-mitmdump --listen-port 8082
+New-Item -ItemType Directory -Force -Path "C:\SecEoKnight\mitm-confdir" | Out-Null
+$proc = Start-Process -FilePath (Get-Command mitmdump).Source `
+  -ArgumentList '--listen-host 127.0.0.1 --listen-port 8082 --set confdir="C:\SecEoKnight\mitm-confdir"' `
+  -PassThru -WindowStyle Hidden
+
+$cert = "C:\SecEoKnight\mitm-confdir\mitmproxy-ca-cert.cer"
+$waited = 0
+while (-not (Test-Path $cert) -and $waited -lt 30) { Start-Sleep -Seconds 1; $waited++ }
+Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+Import-Certificate -FilePath $cert -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*mitmproxy*" }
 ```
+The last line should print a certificate — that confirms it imported and is trusted.
 
-Open Chrome and go to `http://mitm.it` → click **Windows** → install the `.cer` file as described in Option A Step 5.
-
-Press `Ctrl+C` to stop the temporary proxy.
-
-> **Important:** the temporary proxy above generates its CA certificate under your current user profile (`%USERPROFILE%\.mitmproxy`). The permanent Windows service you install in Step 5 runs as `LocalSystem` — a different account with its own profile — so it will generate and present a *different* CA unless you explicitly point both at the same config directory. Use `--set confdir="C:\SecEoKnight\mitm-confdir"` on **both** the temporary proxy command above and the service's `AppParameters` in Step 5, or every HTTPS site will fail with a certificate-trust error once the permanent service takes over.
+> **Important:** this uses `--set confdir="C:\SecEoKnight\mitm-confdir"` for cert generation.
+> The permanent Windows service you install in Step 5 must use the exact same `confdir` in its
+> `AppParameters`, or it will generate and present a *different* CA than the one you just
+> trusted — every HTTPS site will fail with a certificate-trust error once the permanent
+> service takes over. This is the single most common cause of "internet stopped working after
+> setup" on this project; keeping the confdir identical in both places is what fixes it.
 
 ### Step 5 — Install as Windows Services (NSSM)
 
@@ -253,7 +267,7 @@ Both now run silently in the background — no windows to keep open.
 4. Select the `extension/` folder from the repo root
 5. The SecEoKnight extension icon appears in Chrome toolbar ✓
 
-If your server IP differs from `192.168.1.189`, open `extension/background.js` and update line 1:
+If your server IP differs from `192.168.1.63`, open `extension/background.js` and update line 1:
 ```javascript
 const API_BASE = "http://YOUR_SERVER_IP:5001";
 ```
@@ -265,17 +279,28 @@ Then reload the extension in `chrome://extensions/` → click the refresh icon o
 
 For large-scale deployment without visiting each machine individually:
 
+> **One shared CA, not 50 different ones.** `setup.ps1` generates a fresh, unique CA on each
+> machine if `C:\SecEoKnight\mitm-confdir\` doesn't already exist there. Run it independently
+> on 50 machines and you get 50 different CAs — the single certificate pushed in Step 1 below
+> will only match the one machine it came from. To share one CA fleet-wide: run Option A once
+> on a "template" machine, copy *that* machine's `mitm-confdir` folder (it holds the CA's
+> private key, not just the `.cer`) into the network share in Step 2, and have the Step 3
+> startup script copy it to `C:\SecEoKnight\mitm-confdir` **before** calling `setup.ps1` —
+> since the cert file will already exist, the script reuses it instead of minting a new one.
+
 ### 1. Deploy the Certificate via Group Policy
 
 This pushes the mitmproxy certificate to all domain computers automatically:
 - Open **Group Policy Management** on your domain controller
 - Computer Configuration → Windows Settings → Security Settings
 - → Public Key Policies → Trusted Root Certification Authorities
-- Right-click → **Import** → select `mitmproxy-ca-cert.cer`
+- Right-click → **Import** → select `mitmproxy-ca-cert.cer` **from the shared `mitm-confdir`
+  described above** — not a fresh one from an arbitrary machine
 
 ### 2. Create a Network Share
 
-Put `setup.ps1`, `agent.py`, and `to-server.py` in a shared folder accessible to all endpoints, e.g. `\\fileserver\SecEoKnight\`.
+Put `setup.ps1`, `agent.py`, `to-server.py`, and the shared `mitm-confdir\` folder in a shared
+folder accessible to all endpoints, e.g. `\\fileserver\SecEoKnight\`.
 
 ### 3. Create a Startup Script via Group Policy
 
@@ -283,9 +308,12 @@ Put `setup.ps1`, `agent.py`, and `to-server.py` in a shared folder accessible to
 - Add a PowerShell startup script:
 
 ```powershell
-# Copy files from network share
-Copy-Item "\\fileserver\SecEoKnight\agent.py"     "C:\SecEoKnight\" -Force
-Copy-Item "\\fileserver\SecEoKnight\to-server.py" "C:\SecEoKnight\" -Force
+# Copy files from network share, including the shared mitm-confdir so setup.ps1
+# reuses the fleet-wide CA instead of generating a new one per machine
+New-Item -ItemType Directory -Force -Path "C:\SecEoKnight" | Out-Null
+Copy-Item "\\fileserver\SecEoKnight\agent.py"      "C:\SecEoKnight\" -Force
+Copy-Item "\\fileserver\SecEoKnight\to-server.py"  "C:\SecEoKnight\" -Force
+Copy-Item "\\fileserver\SecEoKnight\mitm-confdir"  "C:\SecEoKnight\" -Recurse -Force
 
 # Run setup if services not already installed
 if (-not (Get-Service SecEoKnight-Proxy -ErrorAction SilentlyContinue)) {
@@ -293,7 +321,8 @@ if (-not (Get-Service SecEoKnight-Proxy -ErrorAction SilentlyContinue)) {
 }
 ```
 
-All 50 machines install the services on their next boot.
+All 50 machines install the services on their next boot, reuse the same CA, and trust it
+because the GPO in Step 1 already pushed that exact CA to their Trusted Root store.
 
 ---
 
@@ -314,14 +343,14 @@ Or from your SIEM dashboard → **Endpoint Monitor** tab.
 
 To pause monitoring on a machine (services still installed):
 ```powershell
-sc stop SecEoKnight-Proxy
-sc stop SecEoKnight-Logger
+sc.exe stop SecEoKnight-Proxy
+sc.exe stop SecEoKnight-Logger
 ```
 
 To resume:
 ```powershell
-sc start SecEoKnight-Proxy
-sc start SecEoKnight-Logger
+sc.exe start SecEoKnight-Proxy
+sc.exe start SecEoKnight-Logger
 ```
 
 ---
@@ -331,8 +360,8 @@ sc start SecEoKnight-Logger
 Run as Administrator:
 ```powershell
 # Stop and remove services
-sc stop SecEoKnight-Proxy
-sc stop SecEoKnight-Logger
+sc.exe stop SecEoKnight-Proxy
+sc.exe stop SecEoKnight-Logger
 C:\SecEoKnight\nssm.exe remove SecEoKnight-Proxy  confirm
 C:\SecEoKnight\nssm.exe remove SecEoKnight-Logger confirm
 
@@ -356,7 +385,7 @@ Remove-Item -Recurse -Force C:\url-block -ErrorAction SilentlyContinue
 
 ```powershell
 # Check why it failed
-sc query SecEoKnight-Proxy
+sc.exe query SecEoKnight-Proxy
 Get-Content C:\SecEoKnight\Logs\proxy-error.log -Tail 30
 ```
 
@@ -364,18 +393,29 @@ Common causes: mitmdump not found (check PATH), agent.py missing, port 8082 in u
 
 ### Websites Not Being Blocked
 
-1. Confirm service is running: `sc query SecEoKnight-Proxy` → must be RUNNING
+1. Confirm service is running: `sc.exe query SecEoKnight-Proxy` → must be RUNNING
 2. Wait 30 seconds for blocklist refresh
 3. Check proxy is set: `netsh winhttp show proxy`
 4. Check browser proxy: Settings → Network → Proxy
 
 ### Endpoint Not Appearing in Dashboard
 
-1. `sc query SecEoKnight-Logger` — must be RUNNING
+1. `sc.exe query SecEoKnight-Logger` — must be RUNNING
 2. `Get-Content C:\SecEoKnight\Logs\logger-error.log -Tail 20` — check for connection errors
-3. Verify server reachable: `Test-NetConnection -ComputerName 192.168.1.189 -Port 5001`
+3. Verify server reachable: `Test-NetConnection -ComputerName 192.168.1.63 -Port 5001`
 
 ### Certificate Error in Chrome
 
-Re-run the certificate install and choose **Local Machine** (not Current User).
-Check it installed: open `certmgr.msc` → Trusted Root Certification Authorities → Certificates → look for `mitmproxy`.
+1. Check whether the cert is actually installed:
+   ```powershell
+   Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*mitmproxy*" }
+   ```
+   Nothing printed → re-run `setup.ps1` as Administrator (cert import needs elevation).
+2. If a cert IS listed but sites still fail, it may not match what `SecEoKnight-Proxy` is
+   presenting. Confirm the service's `confdir` matches where the cert was generated:
+   ```powershell
+   & "C:\SecEoKnight\nssm.exe" get SecEoKnight-Proxy AppParameters
+   ```
+   Should include `--set confdir="C:\SecEoKnight\mitm-confdir"`. If it doesn't, or points
+   elsewhere, fix it with `nssm set SecEoKnight-Proxy AppParameters "..."` and restart the
+   service — see the "HTTPS sites showing SSL errors" section in `TROUBLESHOOTING.md` for details.

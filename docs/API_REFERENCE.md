@@ -184,6 +184,12 @@ Returns paginated list of security events. Used by Network Activity and Audit Lo
 ### GET /api/stats
 Returns aggregated statistics for dashboard charts and KPI cards.
 
+**Query params:**
+- `from_ts` (ISO datetime string, optional) — scopes all volume metrics (totals, top domains,
+  hourly activity, block-type breakdown) to events at or after this time. Omit for the server's
+  default window (last 24h for most fields). Used to power the 12h/24h/3d/7d/30d/60d/90d
+  time-range toggle on the dashboard.
+
 **Response:**
 ```json
 {
@@ -215,16 +221,21 @@ Returns aggregated statistics for dashboard charts and KPI cards.
 ### GET /api/endpoints
 Returns all known endpoints with status. Used by Endpoint Monitor tab.
 
+`status` is computed live from `last_seen` — `active` if a heartbeat or event arrived within
+the last 3 minutes (`STALE_THRESHOLD_MINUTES` in `database.py`), `inactive` otherwise. It is
+not a stored flag, so it self-corrects if an endpoint goes offline without a clean shutdown.
+
 **Response:**
 ```json
 [
   {
     "id": 1,
     "ip": "192.168.1.101",
-    "hostname": null,
+    "hostname": "DESKTOP-A1B2C3",
     "last_seen": "2024-01-01T10:05:00",
     "total_requests": 520,
     "total_blocked": 8,
+    "agent_version": "1.1.0",
     "status": "active"
   }
 ]
@@ -232,6 +243,58 @@ Returns all known endpoints with status. Used by Endpoint Monitor tab.
 
 ### GET /api/endpoints/{ip}
 Returns detail for a single endpoint plus its 50 most recent events.
+
+**Response:**
+```json
+{
+  "endpoint": {
+    "id": 1,
+    "ip": "192.168.1.101",
+    "hostname": "DESKTOP-A1B2C3",
+    "last_seen": "2024-01-01T10:05:00",
+    "total_requests": 520,
+    "total_blocked": 8,
+    "agent_version": "1.1.0",
+    "status": "active"
+  },
+  "recent_events": [
+    {
+      "id": 42,
+      "timestamp_iso": "2024-01-01T10:04:12",
+      "event_type": "blocked_host",
+      "host": "gambling-site.com",
+      "url": "https://gambling-site.com/",
+      "blocked": 1,
+      "block_type": "host"
+    }
+  ]
+}
+```
+> `recent_events` matches on `endpoint_ip` (the machine's real LAN IP, self-reported by the
+> agent) OR `client_ip`. For locally-proxied traffic (mitmproxy running on the same machine as
+> the browser), `client_ip` is almost always `127.0.0.1` — `endpoint_ip` is what actually
+> identifies the source machine.
+
+### POST /api/heartbeat
+Sent every 60 seconds by `to-server.py` on each endpoint, independent of any browsing traffic.
+This is what keeps `active`/`inactive` status accurate even when a machine is idle — not
+something the dashboard needs to call directly.
+
+**Body:**
+```json
+{
+  "ip": "192.168.1.101",
+  "hostname": "DESKTOP-A1B2C3",
+  "agent_version": "1.1.0"
+}
+```
+`hostname` and `agent_version` are optional but recommended — omitting `hostname` falls back to
+upserting by IP alone.
+
+**Response (202):**
+```json
+{"received": true}
+```
 
 ---
 

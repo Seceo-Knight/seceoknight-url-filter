@@ -8,7 +8,7 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
 
 | Component | Where It Runs | What It Does |
 |---|---|---|
-| **Security Server** | Ubuntu 22.04 (192.168.1.63) | Stores all events, serves the blocklist, runs AI models, pushes alerts to your dashboard |
+| **Security Server** | Ubuntu 24.04 (192.168.1.63) | Stores all events, serves the blocklist, runs AI models, pushes alerts to your dashboard |
 | **mitmproxy Agent** | Each Windows endpoint | Intercepts browser traffic, blocks URLs in real time |
 | **Chrome Extension** | Each Windows endpoint | Detects phishing URLs using AI before the page loads |
 | **Malware Scanner** | Each Windows endpoint | Watches Downloads folder, scans new files with AI CNN model, quarantines detected malware |
@@ -24,7 +24,7 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
  │                                                                 │
  │  Windows Endpoint 1          ┌──────────────────────────┐       │
  │  ┌─────────────────┐         │   SECURITY SERVER        │       │
- │  │ mitmproxy       │─logs───▶│   Ubuntu 22.04           │       │
+ │  │ mitmproxy       │─logs───▶│   Ubuntu 24.04           │       │
  │  │ Chrome Ext (AI) │─predict▶│   IP: 192.168.1.63      │       │
  │  └─────────────────┘◀─block─ │   Port 5001 (API)        │       │
  │                               │   Port 80  (Nginx)       │       │
@@ -46,7 +46,7 @@ Enterprise-grade URL filtering and AI-powered threat detection for your SIEM.
 ## Before You Start — What You Need
 
 ### Security Server
-- Ubuntu 22.04 LTS (fresh install)
+- Ubuntu 24.04 LTS (fresh install)
 - Minimum: 8 GB RAM, 4 CPU cores, 100 GB SSD
 - Static IP on your LAN — set to **192.168.1.63**
 - Internet access (for first-time package install only)
@@ -89,26 +89,24 @@ Wait for it to finish. This updates all system packages.
 ## Step 3 — Install Required System Packages
 
 ```bash
-sudo apt install -y python3.11 python3.11-venv python3.11-dev python3-pip nginx git git-lfs sqlite3
+sudo apt install -y python3 python3-venv python3-dev python3-pip nginx git sqlite3
 ```
 
 Verify Python installed correctly:
 ```bash
-python3.11 --version
+python3 --version
 ```
-You should see: `Python 3.11.x`
+You should see: `Python 3.12.x` (Ubuntu 24.04's default — TensorFlow 2.16.1 supports up to 3.12, so no special version is needed).
+
+> Note: earlier revisions of this guide called for `python3.11` and `git-lfs`. Ubuntu 24.04 doesn't ship `python3.11` in its default repos, and the AI model files in this repo are committed as regular files (not Git LFS pointers), so `git-lfs` isn't required either — plain `python3` and `git` are enough.
 
 ---
 
-## Step 4 — Set Up Git LFS
+## Step 4 — (Skipped)
 
-Git LFS is required to download the large AI model files from GitHub.
-
-```bash
-git lfs install
-```
-
-You should see: `Git LFS initialized.`
+The AI model files (`server/models/malware/*.keras`) are committed to this repo as regular
+Git objects, not Git LFS pointers — a plain `git clone` in Step 6 downloads them along with
+everything else. No separate LFS step is needed.
 
 ---
 
@@ -141,12 +139,9 @@ sudo chown $USER:$USER /opt/seceoknight
 cd /opt/seceoknight
 
 git clone https://github.com/Seceo-Knight/seceoknight-url-filter.git .
-
-# Download the large model files (Git LFS)
-git lfs pull
 ```
 
-After `git lfs pull` you should see the malware models are real files (not tiny pointer files):
+Confirm the malware models came down as real files:
 ```bash
 ls -lh server/models/malware/
 ```
@@ -158,7 +153,7 @@ Expected: CNN.keras (~2 MB), ViT.keras (~7 MB), 1D-CNN-LSTM.keras (~6 MB)
 
 ```bash
 cd /opt/seceoknight
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -231,11 +226,14 @@ The server must start automatically every time Ubuntu boots.
 # Copy the service file
 sudo cp /opt/seceoknight/systemd/seceoknight.service /etc/systemd/system/
 
-# If your Ubuntu username is NOT "ubuntu", edit the service file:
-sudo nano /etc/systemd/system/seceoknight.service
-# Find the line:  User=ubuntu
-# Change it to:   User=YOUR_USERNAME
-# Save: Ctrl+O  →  Enter  →  Ctrl+X
+# The shipped file runs the service as User=root. That's not required —
+# the server only needs to bind port 5001 and read/write /opt/seceoknight,
+# so for defense-in-depth you can run it as a dedicated non-root user instead:
+#   sudo useradd -r -s /usr/sbin/nologin seceoknight
+#   sudo chown -R seceoknight:seceoknight /opt/seceoknight
+#   sudo nano /etc/systemd/system/seceoknight.service
+#   # Change:  User=root   →   User=seceoknight
+# If you skip this, the service simply runs as root — functional, just not least-privilege.
 
 # Enable and start
 sudo systemctl daemon-reload
@@ -450,38 +448,29 @@ git push
    - Install Python packages (`requests`, `watchdog`, `pillow`)
    - Download and install mitmproxy
    - Download NSSM (Windows Service manager) to `C:\SecEoKnight\nssm.exe`
-   - Open `http://mitm.it` so you can install the certificate
+   - Generate a mitmproxy CA certificate (shared `C:\SecEoKnight\mitm-confdir\`) and
+     automatically install it into the Windows Trusted Root store — no browser step needed
    - Install **SecEoKnight-Proxy** as a Windows Service (mitmproxy + agent.py)
    - Install **SecEoKnight-Logger** as a Windows Service (to-server.py)
    - Install **SecEoKnight-Scanner** as a Windows Service (malware_watcher.py)
    - Set machine-wide proxy to route all browser traffic through mitmproxy
 
-5. **Install the certificate when prompted** *(critical — HTTPS blocking won't work without this)*
+5. **Certificate installation is fully automatic** *(critical — HTTPS blocking won't work without this, but you don't need to do anything)*
 
-   The script opens `http://mitm.it` automatically and pauses. **Close all browser windows first**, then re-open the browser so it picks up the temporary proxy setting.
-
-   **Method A — via mitm.it (preferred):**
-   - Browser opens `http://mitm.it` automatically
-   - Click **Windows**
-   - Download `mitmproxy-ca-cert.cer`
-   - Double-click the `.cer` file
-   - Click **Install Certificate**
-   - Select **Local Machine** → click Next
-   - Select **Place all certificates in the following store**
-   - Click Browse → select **Trusted Root Certification Authorities** → OK
-   - Click Next → Finish
-   - You should see: *"The import was successful"*
-   - Go back to PowerShell and press **Enter**
-
-   **Method B — if mitm.it shows "traffic is not going through mitmproxy":**
-
-   Press **Enter** in PowerShell to let the script finish, then run this in PowerShell as Admin:
-   ```powershell
-   certutil -addstore root "C:\Windows\System32\config\systemprofile\.mitmproxy\mitmproxy-ca-cert.cer"
+   `setup.ps1` briefly runs mitmproxy in the background with `--set confdir="C:\SecEoKnight\mitm-confdir"`
+   to generate a CA certificate, then imports it directly into `Cert:\LocalMachine\Root` with
+   `Import-Certificate` and verifies the import by re-reading the cert store. You'll see:
    ```
-   You should see: *"CertUtil: -addstore command completed successfully."*
+   Certificate installed and verified in Trusted Root (thumbprint: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX)
+   ```
+   No browser step, no `mitm.it`, nothing to click through. This CA is also what the permanent
+   `SecEoKnight-Proxy` Windows Service uses (it's started with the same `--set confdir=...` flag),
+   so there's no mismatch between the cert you installed and the cert the running service presents —
+   that mismatch used to be the #1 cause of "internet stopped working after setup" on this project;
+   it's fixed at the source now.
 
-   This installs the certificate that the running Windows Service uses (stored in the LocalSystem profile).
+   If the script reports the certificate could not be verified, re-run it as Administrator —
+   that's almost always a missing-elevation issue, not a mitmproxy problem.
 
 6. **Setup completes — all three agents run as Windows Services:**
    - `SecEoKnight-Proxy` — mitmproxy traffic interceptor
@@ -535,14 +524,24 @@ Go to: **Settings → Network & Internet → Proxy**
 
 ### Step 4 — Install the Certificate
 
-Open PowerShell and run:
+Use a shared `confdir` for cert generation so it matches what the Windows Service will use later
+in Step 5 — this is important, mixing confdirs is what causes "HTTPS stopped working after setup".
+
 ```powershell
-mitmdump --listen-port 8082
+New-Item -ItemType Directory -Force -Path "C:\SecEoKnight\mitm-confdir" | Out-Null
+$proc = Start-Process -FilePath (Get-Command mitmdump).Source `
+  -ArgumentList '--listen-host 127.0.0.1 --listen-port 8082 --set confdir="C:\SecEoKnight\mitm-confdir"' `
+  -PassThru -WindowStyle Hidden
+
+$cert = "C:\SecEoKnight\mitm-confdir\mitmproxy-ca-cert.cer"
+$waited = 0
+while (-not (Test-Path $cert) -and $waited -lt 30) { Start-Sleep -Seconds 1; $waited++ }
+Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+Import-Certificate -FilePath $cert -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*mitmproxy*" }
 ```
-
-Open Chrome and go to `http://mitm.it` → click **Windows** → install the `.cer` file as described in Option A Step 5.
-
-Stop mitmdump with `Ctrl+C`.
+The last command should print a certificate — that confirms it's installed and trusted.
 
 ### Step 5 — Install as Windows Services
 
@@ -557,9 +556,10 @@ $nssm     = "C:\SecEoKnight\nssm.exe"
 $mitmdump = (Get-Command mitmdump).Source
 $python   = (Get-Command python).Source
 
-# Proxy service
+# Proxy service — must use the SAME confdir as Step 4, otherwise the service
+# generates its own CA and the certificate you installed won't match it.
 & $nssm install SecEoKnight-Proxy $mitmdump
-& $nssm set SecEoKnight-Proxy AppParameters "--listen-host 0.0.0.0 --listen-port 8082 -s `"C:\SecEoKnight\agent.py`""
+& $nssm set SecEoKnight-Proxy AppParameters "--listen-host 0.0.0.0 --listen-port 8082 --set confdir=`"C:\SecEoKnight\mitm-confdir`" -s `"C:\SecEoKnight\agent.py`""
 & $nssm set SecEoKnight-Proxy Start SERVICE_AUTO_START
 
 # Logger service
@@ -591,12 +591,25 @@ For large-scale deployment without visiting each machine individually:
 
 Put `setup.ps1`, `agent.py`, and `to-server.py` in a shared folder accessible from all machines (e.g. `\\fileserver\SecEoKnight\`).
 
+> **Important — one shared CA, not 50 different ones.** `setup.ps1` generates a fresh,
+> unique CA certificate on each machine if none exists yet in its `C:\SecEoKnight\mitm-confdir\`.
+> If you run it independently on 50 machines, you get 50 different CAs — and a GPO that pushes
+> just *one* `mitmproxy-ca-cert.cer` will only match the one machine it came from. To use a
+> single shared CA across the fleet (so the GPO import in Step 2 below actually works everywhere):
+> 1. Run Option A on one "template" machine first, so it generates the CA.
+> 2. Copy that machine's `C:\SecEoKnight\mitm-confdir\` folder (it contains the CA's private key,
+>    not just the `.cer`) into the network share alongside `setup.ps1`.
+> 3. Have the Step 3 startup script below copy `mitm-confdir` into `C:\SecEoKnight\` **before**
+>    running `setup.ps1` — since the CA file will already exist, `setup.ps1` skips generation and
+>    reuses the shared one instead of minting a new CA per machine.
+
 ### Step 2 — Deploy the mitmproxy Certificate via Group Policy
 
 Open **Group Policy Management** on your domain controller:
 - Computer Configuration → Windows Settings → Security Settings
 - → Public Key Policies → Trusted Root Certification Authorities
-- Right-click → Import → select the `mitmproxy-ca-cert.cer` file
+- Right-click → Import → select the `mitmproxy-ca-cert.cer` file **from the shared `mitm-confdir`
+  generated in the note above** (not a fresh/unrelated one)
 
 This automatically installs the certificate on all domain computers.
 
@@ -605,14 +618,16 @@ This automatically installs the certificate on all domain computers.
 - Computer Configuration → Windows Settings → Scripts → Startup
 - Add a PowerShell script:
   ```powershell
-  # Copy files from network share
-  Copy-Item "\\fileserver\SecEoKnight\*" "C:\SecEoKnight\" -Force
+  # Copy files from network share, including the shared mitm-confdir
+  # (must exist BEFORE setup.ps1 runs so it reuses the CA instead of generating a new one)
+  Copy-Item "\\fileserver\SecEoKnight\*" "C:\SecEoKnight\" -Recurse -Force
 
   # Run setup (silent mode)
   & "C:\SecEoKnight\setup.ps1"
   ```
 
-All 50 machines run the script on next boot.
+All 50 machines run the script on next boot, reuse the same CA, and trust it because the GPO in
+Step 2 already pushed that exact CA to their Trusted Root store.
 
 ---
 
@@ -753,11 +768,11 @@ sqlite3 /opt/seceoknight/server/seceoknight.db "SELECT COUNT(*) FROM events;"
 |---|---|
 | Server won't start | `sudo journalctl -u seceoknight -n 50` — check error message |
 | AI shows `not_loaded` | Run `python3 scripts/train_phishing_model.py` then restart server |
-| Endpoint not appearing in list | Run `sc query SecEoKnight-Logger` — must show RUNNING; check server IP |
+| Endpoint not appearing in list | Run `sc.exe query SecEoKnight-Logger` (not plain `sc` — PowerShell aliases that to `Set-Content`) — must show RUNNING; check server IP |
 | Malware scanner not running | Run `Get-Service SecEoKnight-Scanner` — check `C:\SecEoKnight\Logs\scanner-error.log` |
 | File not quarantined | Check file extension is in scan list and size is over 512 bytes |
 | Websites not being blocked | Wait 30 seconds; check proxy is ON in Windows Settings |
-| `http://mitm.it` won't open | Make sure mitmproxy is running first and proxy is configured |
+| Certificate install failed during setup | Re-run `setup.ps1` as Administrator — cert import needs elevation |
 | Certificate error in Chrome | Re-install mitmproxy certificate as Local Machine (not Current User) |
 
 Full troubleshooting guide: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
@@ -917,20 +932,37 @@ Event type values:
 ```http
 GET /api/stats
 ```
+Optional query param: `from_ts` (ISO datetime) — scopes all volume metrics to events at or
+after this time, used for the dashboard's 12h/24h/3d/7d/30d/60d/90d range toggle. Omit it to get
+the server's default (last 24h for most fields).
+
 Response:
 ```json
 {
   "total_requests": 48291,
-  "blocked_requests": 1204,
-  "allowed_requests": 47087,
-  "ai_detections": 37,
+  "total_blocked": 1204,
+  "total_allowed": 47087,
+  "ai_phishing": 22,
+  "ai_malware": 15,
   "active_endpoints": 12,
-  "top_blocked_hosts": [
-    {"host": "facebook.com", "count": 412},
-    {"host": "instagram.com", "count": 289}
+  "today_blocked": 340,
+  "top_blocked_domains": [
+    {"host": "facebook.com", "cnt": 412},
+    {"host": "instagram.com", "cnt": 289}
+  ],
+  "hourly_activity": [
+    {"hour": "2024-01-15T09:00:00", "total": 120, "blocked": 5}
+  ],
+  "block_type_breakdown": [
+    {"block_type": "host", "cnt": 200},
+    {"block_type": "ai_phishing", "cnt": 12}
   ]
 }
 ```
+> Note: field names are `total_blocked` / `total_allowed` / `ai_phishing` / `ai_malware` /
+> `top_blocked_domains` — not `blocked_requests` / `allowed_requests` / `ai_detections` /
+> `top_blocked_hosts` as shown in some older references. Match your dashboard code to the
+> field names above (see `server/database.py`'s `get_stats()` for the source of truth).
 
 ---
 
@@ -940,16 +972,21 @@ Response:
 ```http
 GET /api/endpoints
 ```
+`status` is computed live — `active` if a heartbeat or event arrived within the last
+`STALE_THRESHOLD_MINUTES` (3 min), `inactive` otherwise. It's not a static stored flag.
+
 Response:
 ```json
 [
   {
+    "id": 1,
     "ip": "192.168.1.105",
-    "hostname": "",
+    "hostname": "DESKTOP-A1B2C3",
     "status": "active",
     "last_seen": "2024-01-15T14:30:00",
     "total_requests": 2341,
-    "blocked_count": 88
+    "total_blocked": 88,
+    "agent_version": "1.1.0"
   }
 ]
 ```
@@ -965,10 +1002,24 @@ GET /api/endpoints/192.168.1.105
 Response:
 ```json
 {
-  "endpoint": {"ip": "192.168.1.105", "status": "active", ...},
+  "endpoint": {"ip": "192.168.1.105", "hostname": "DESKTOP-A1B2C3", "status": "active", "agent_version": "1.1.0", ...},
   "recent_events": [...]
 }
 ```
+> `recent_events` matches on `endpoint_ip` (the machine's real LAN IP, self-reported by the
+> agent) OR `client_ip`. For locally-proxied traffic `client_ip` is almost always `127.0.0.1`
+> since mitmproxy runs on the same machine as the browser — `endpoint_ip` is the field that
+> actually identifies which machine an event came from.
+
+#### Heartbeat (internal — sent by `to-server.py`, not called by the dashboard)
+```http
+POST /api/heartbeat
+```
+```json
+{"ip": "192.168.1.105", "hostname": "DESKTOP-A1B2C3", "agent_version": "1.1.0"}
+```
+Every endpoint pings this every 60 seconds regardless of browsing activity — this is what
+makes `active`/`inactive` status reflect reality instead of going stale once traffic stops.
 
 ---
 

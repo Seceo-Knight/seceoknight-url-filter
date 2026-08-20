@@ -30,7 +30,7 @@ Think of it as a security guard that watches all 50 computers at once, 24/7.
 ```
 
 - Each endpoint runs **mitmproxy** (intercepts browser traffic) + **to-server.py** (sends logs)
-- The **security server** (Ubuntu, IP 192.168.1.189) stores everything and serves the blocklist
+- The **security server** (Ubuntu, IP 192.168.1.63) stores everything and serves the blocklist
 - The **Chrome extension** adds AI detection directly in the browser
 
 ---
@@ -285,8 +285,8 @@ Full instructions: [ENDPOINT_SETUP.md](ENDPOINT_SETUP.md)
 On the Windows machine, open PowerShell as Administrator and run:
 ```powershell
 # Stop and remove Windows Services
-sc stop  SecEoKnight-Proxy
-sc stop  SecEoKnight-Logger
+sc.exe stop  SecEoKnight-Proxy
+sc.exe stop  SecEoKnight-Logger
 C:\SecEoKnight\nssm.exe remove SecEoKnight-Proxy  confirm
 C:\SecEoKnight\nssm.exe remove SecEoKnight-Logger confirm
 
@@ -323,20 +323,20 @@ sudo journalctl -u seceoknight -n 50
 
 1. Check both services are running — open PowerShell as Administrator and run:
    ```powershell
-   sc query SecEoKnight-Proxy
-   sc query SecEoKnight-Logger
+   sc.exe query SecEoKnight-Proxy
+   sc.exe query SecEoKnight-Logger
    ```
-   Both should show `STATE: 4 RUNNING`. If stopped, run `sc start SecEoKnight-Proxy` / `sc start SecEoKnight-Logger`
-2. Check the server IP in `C:\SecEoKnight\to-server.py` — should be `192.168.1.189`
+   Both should show `STATE: 4 RUNNING`. If stopped, run `sc.exe start SecEoKnight-Proxy` / `sc.exe start SecEoKnight-Logger`
+2. Check the server IP in `C:\SecEoKnight\to-server.py` — should be `192.168.1.63`
 3. Check the server is reachable: on the endpoint, open PowerShell and run:
    ```powershell
-   Test-NetConnection -ComputerName 192.168.1.189 -Port 5001
+   Test-NetConnection -ComputerName 192.168.1.63 -Port 5001
    ```
    Should show `TcpTestSucceeded : True`
 
 ### Websites Are Not Being Blocked
 
-1. Check the blocklist has the rule: `curl http://192.168.1.189/blocklist`
+1. Check the blocklist has the rule: `curl http://192.168.1.63/blocklist`
 2. Wait 30 seconds — endpoints refresh every 30 seconds
 3. Check the proxy is active on the endpoint: Settings → Network → Proxy
 
@@ -376,13 +376,13 @@ sudo tail -f /var/log/nginx/error.log   # Check for errors
 | View logs | `sudo journalctl -u seceoknight -f` |
 | Update from GitHub | `cd /opt/seceoknight && git pull && sudo systemctl restart seceoknight` |
 | Database location | `/opt/seceoknight/server/seceoknight.db` |
-| Server API | `http://192.168.1.189:5001` or `http://192.168.1.189` (via Nginx) |
+| Server API | `http://192.168.1.63:5001` or `http://192.168.1.63` (via Nginx) |
 
 ---
 
 ## Contacts and Support
 
-- Server IP: **192.168.1.189**
+- Server IP: **192.168.1.63**
 - API port: **5001** (direct) / **80** (via Nginx)
 - Log path on endpoints: `C:\url-block\logs.json`
 - Agent path on endpoints: `C:\SecEoKnight\`
