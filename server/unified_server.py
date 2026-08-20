@@ -224,6 +224,7 @@ async def receive_log(payload: dict):
 class HeartbeatIn(BaseModel):
     ip: str
     hostname: str = ""
+    agent_version: str = ""
 
 
 @app.post("/api/heartbeat", tags=["Logs"], status_code=202)
@@ -234,8 +235,10 @@ def receive_heartbeat(hb: HeartbeatIn):
     so it doesn't get wrongly marked inactive, while an endpoint that's
     actually been uninstalled or crashed stops pinging and ages out to
     'inactive' on its own within a few minutes -- no manual DB edits needed.
+    Also carries the endpoint script version so the dashboard can flag
+    machines that need a redeploy after an agent-side fix.
     """
-    db.heartbeat_endpoint(hb.ip, hb.hostname)
+    db.heartbeat_endpoint(hb.ip, hb.hostname, hb.agent_version)
     return {"received": True}
 
 
@@ -341,10 +344,15 @@ def get_endpoint_detail(ip: str):
         if not ep:
             raise HTTPException(404, "Endpoint not found")
 
+        # Match on endpoint_ip (the machine's real LAN IP, self-reported by
+        # agent.py) rather than client_ip alone -- for locally-proxied
+        # traffic client_ip is almost always 127.0.0.1 (the browser
+        # connecting to mitmproxy on the same machine), so filtering on
+        # client_ip alone would return nothing for a real endpoint.
         recent = conn.execute("""
-            SELECT * FROM events WHERE client_ip=?
+            SELECT * FROM events WHERE endpoint_ip=? OR client_ip=?
             ORDER BY timestamp DESC LIMIT 50
-        """, (ip,)).fetchall()
+        """, (ip, ip)).fetchall()
 
         return {
             "endpoint": dict(ep),

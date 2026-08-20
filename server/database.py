@@ -198,13 +198,14 @@ def upsert_endpoint(ip: str, hostname: str = '', blocked: bool = False):
         conn.close()
 
 
-def heartbeat_endpoint(ip: str, hostname: str = ''):
+def heartbeat_endpoint(ip: str, hostname: str = '', agent_version: str = ''):
     """
     Lightweight periodic ping (independent of real browsing traffic).
-    Refreshes last_seen/status only -- does NOT touch total_requests or
-    total_blocked, since a heartbeat isn't a browsing event. This is what
-    lets an idle-but-running endpoint stay 'active' while one that's been
-    uninstalled or crashed naturally ages out to 'inactive' on its own.
+    Refreshes last_seen/status/agent_version only -- does NOT touch
+    total_requests or total_blocked, since a heartbeat isn't a browsing
+    event. This is what lets an idle-but-running endpoint stay 'active'
+    while one that's been uninstalled or crashed naturally ages out to
+    'inactive' on its own.
     """
     conn = get_connection()
     try:
@@ -215,22 +216,24 @@ def heartbeat_endpoint(ip: str, hostname: str = ''):
             if existing:
                 conn.execute("""
                     UPDATE endpoints SET
-                        ip        = ?,
-                        last_seen = datetime('now'),
-                        status    = 'active'
+                        ip            = ?,
+                        last_seen     = datetime('now'),
+                        status        = 'active',
+                        agent_version = CASE WHEN ? != '' THEN ? ELSE agent_version END
                     WHERE hostname = ?
-                """, (ip, hostname))
+                """, (ip, agent_version, agent_version, hostname))
                 conn.commit()
                 return
 
         conn.execute("""
-            INSERT INTO endpoints (ip, hostname, last_seen, total_requests, total_blocked, status)
-            VALUES (?, ?, datetime('now'), 0, 0, 'active')
+            INSERT INTO endpoints (ip, hostname, last_seen, total_requests, total_blocked, status, agent_version)
+            VALUES (?, ?, datetime('now'), 0, 0, 'active', ?)
             ON CONFLICT(ip) DO UPDATE SET
-                last_seen = datetime('now'),
-                status    = 'active',
-                hostname  = CASE WHEN ? != '' THEN ? ELSE hostname END
-        """, (ip, hostname, hostname, hostname))
+                last_seen     = datetime('now'),
+                status        = 'active',
+                hostname      = CASE WHEN ? != '' THEN ? ELSE hostname END,
+                agent_version = CASE WHEN ? != '' THEN ? ELSE agent_version END
+        """, (ip, hostname, agent_version, hostname, hostname, agent_version, agent_version))
         conn.commit()
     finally:
         conn.close()

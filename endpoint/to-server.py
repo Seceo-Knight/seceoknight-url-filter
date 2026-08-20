@@ -16,6 +16,8 @@ import requests
 from datetime import datetime
 
 # -- Configuration -------------------------------------------------------------
+AGENT_VERSION = "1.1.0"   # bump this when shipping a meaningful endpoint-side change
+                           # so the dashboard can tell which machines still need updating
 SERVER_IP     = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT   = 5001
 LOGS_FILE     = r"C:\url-block\logs.json"
@@ -134,7 +136,7 @@ def heartbeat_loop():
         try:
             requests.post(
                 HEARTBEAT_ENDPOINT,
-                json={"ip": ENDPOINT_IP, "hostname": ENDPOINT_HOSTNAME},
+                json={"ip": ENDPOINT_IP, "hostname": ENDPOINT_HOSTNAME, "agent_version": AGENT_VERSION},
                 timeout=5,
             )
             _hb_fail_count = 0
