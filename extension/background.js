@@ -45,6 +45,16 @@ async function getApiBase() {
   return `http://${ip}:${port}`;
 }
 
+// Optional while the server is in its auth "grace period" -- becomes required
+// once the server admin sets SECEOKNIGHT_REQUIRE_API_KEY=true. Set from the
+// popup's Settings panel, same place the server address is configured.
+async function getApiHeaders() {
+  const cfg = await chrome.storage.local.get(["apiKey"]);
+  const headers = { "Content-Type": "application/json" };
+  if (cfg.apiKey) headers["X-API-Key"] = cfg.apiKey;
+  return headers;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function extractHostname(url) {
@@ -83,7 +93,7 @@ async function checkPhishing(url) {
     const apiBase = await getApiBase();
     const res = await fetch(`${apiBase}/predict/phishing`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await getApiHeaders(),
       body:    JSON.stringify({ url }),
       signal:  AbortSignal.timeout(4000)   // 4s timeout — don't delay browsing
     });
@@ -170,7 +180,7 @@ async function logEvent(url, confidence, tabId) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     await fetch(`${apiBase}/logs`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await getApiHeaders(),
       body: JSON.stringify({
         timestamp:  Date.now() / 1000,
         url,

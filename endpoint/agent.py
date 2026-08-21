@@ -42,6 +42,12 @@ SERVER_IP    = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT  = 5001
 BLOCKLIST_URL = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
 
+# API key -- optional while the server is in its auth "grace period"
+# (SECEOKNIGHT_REQUIRE_API_KEY=false), required once it's flipped to true.
+# Get this value from server/.env on the server (printed at the end of
+# install.sh), and set it here.
+API_KEY = ""   # <-- Paste the key from the server's install.sh output
+
 LOG_PATH     = r"C:\url-block\logs.json"
 REQUEST_TIMEOUT  = 10
 DEBUG            = True
@@ -92,9 +98,12 @@ class VideoBlockerSafe:
 
         for attempt in range(1, MAX_RETRIES + 2):
             try:
+                req_headers = {"User-Agent": "SecEoKnight-Agent/1.0"}
+                if API_KEY:
+                    req_headers["X-API-Key"] = API_KEY
                 req = urllib.request.Request(
                     BLOCKLIST_URL,
-                    headers={"User-Agent": "SecEoKnight-Agent/1.0"},
+                    headers=req_headers,
                 )
                 if self._last_modified_header:
                     req.add_header("If-Modified-Since", self._last_modified_header)

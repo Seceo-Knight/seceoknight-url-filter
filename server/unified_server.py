@@ -21,7 +21,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -29,6 +29,7 @@ from pydantic import BaseModel
 import database as db
 import ai_engine as ai
 from websocket_manager import ws_manager
+from auth import verify_api_key, check_ws_api_key
 
 
 # ── Lifespan (startup / shutdown) ─────────────────────────────────────────────
@@ -74,7 +75,7 @@ def health():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/blocklist", response_class=PlainTextResponse, tags=["Blocklist"])
-def get_blocklist_txt():
+def get_blocklist_txt(_auth: bool = Depends(verify_api_key)):
     """
     Returns the blocklist as plain text — same format as the original
     url_blocklist.txt so agent.py needs zero changes to its parser.
@@ -98,7 +99,7 @@ class BlocklistRule(BaseModel):
 
 
 @app.get("/api/blocklist", tags=["Blocklist"])
-def list_blocklist(active_only: bool = True):
+def list_blocklist(active_only: bool = True, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         query = "SELECT * FROM blocklist"
@@ -112,7 +113,7 @@ def list_blocklist(active_only: bool = True):
 
 
 @app.post("/api/blocklist", tags=["Blocklist"], status_code=201)
-def add_blocklist_rule(rule: BlocklistRule):
+def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key)):
     valid_types = {"host", "prefix", "regex", "vid"}
     if rule.rule_type not in valid_types:
         raise HTTPException(400, f"rule_type must be one of {valid_types}")
@@ -138,7 +139,7 @@ def add_blocklist_rule(rule: BlocklistRule):
 
 
 @app.delete("/api/blocklist/{rule_id}", tags=["Blocklist"])
-def delete_blocklist_rule(rule_id: int):
+def delete_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         cur = conn.execute(
@@ -153,7 +154,7 @@ def delete_blocklist_rule(rule_id: int):
 
 
 @app.put("/api/blocklist/{rule_id}/restore", tags=["Blocklist"])
-def restore_blocklist_rule(rule_id: int):
+def restore_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         cur = conn.execute(
@@ -172,7 +173,7 @@ def restore_blocklist_rule(rule_id: int):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/logs", tags=["Logs"], status_code=202)
-async def receive_log(payload: dict, request: Request):
+async def receive_log(payload: dict, request: Request, _auth: bool = Depends(verify_api_key)):
     """
     Accepts a single log entry (JSON) from to-server.py or the Chrome
     extension. Saves to SQLite, updates endpoint record, and pushes
@@ -241,7 +242,7 @@ class HeartbeatIn(BaseModel):
 
 
 @app.post("/api/heartbeat", tags=["Logs"], status_code=202)
-def receive_heartbeat(hb: HeartbeatIn):
+def receive_heartbeat(hb: HeartbeatIn, _auth: bool = Depends(verify_api_key)):
     """
     Lightweight periodic ping from to-server.py, sent independently of real
     browsing traffic. Keeps an idle-but-healthy endpoint's last_seen fresh
@@ -269,6 +270,7 @@ def get_events(
     host:       Optional[str]  = None,
     from_ts:    Optional[str]  = None,   # ISO datetime string
     to_ts:      Optional[str]  = None,
+    _auth:      bool           = Depends(verify_api_key),
 ):
     conn = db.get_connection()
     try:
@@ -312,7 +314,7 @@ def get_events(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/stats", tags=["Dashboard"])
-def get_stats(from_ts: Optional[str] = None):
+def get_stats(from_ts: Optional[str] = None, _auth: bool = Depends(verify_api_key)):
     return db.get_stats(from_ts=from_ts)
 
 
@@ -331,7 +333,7 @@ _ENDPOINT_STATUS_CASE = f"""
 
 
 @app.get("/api/endpoints", tags=["Dashboard"])
-def get_endpoints():
+def get_endpoints(_auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         rows = conn.execute(f"""
@@ -346,7 +348,7 @@ def get_endpoints():
 
 
 @app.get("/api/endpoints/{ip}", tags=["Dashboard"])
-def get_endpoint_detail(ip: str):
+def get_endpoint_detail(ip: str, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         ep = conn.execute(f"""
@@ -376,7 +378,7 @@ def get_endpoint_detail(ip: str):
 
 
 @app.get("/api/my-stats", tags=["Dashboard"])
-def get_my_stats(request: Request):
+def get_my_stats(request: Request, _auth: bool = Depends(verify_api_key)):
     """
     "This machine's own" stats, for the Chrome extension popup -- NOT the
     fleet-wide /api/stats. That endpoint aggregates across every deployed
@@ -440,7 +442,7 @@ class MalwareRequest(BaseModel):
 
 
 @app.post("/predict/phishing", tags=["AI"])
-async def predict_phishing(req: PhishingRequest, request: Request):
+async def predict_phishing(req: PhishingRequest, request: Request, _auth: bool = Depends(verify_api_key)):
     result = ai.predict_phishing(req.url)
 
     # If phishing detected, log it and alert dashboard
@@ -483,12 +485,12 @@ async def predict_phishing(req: PhishingRequest, request: Request):
 
 
 @app.get("/predict/phishing", tags=["AI"])
-async def predict_phishing_get(request: Request, url: str = Query(...)):
-    return await predict_phishing(PhishingRequest(url=url), request)
+async def predict_phishing_get(request: Request, url: str = Query(...), _auth: bool = Depends(verify_api_key)):
+    return await predict_phishing(PhishingRequest(url=url), request, _auth)
 
 
 @app.post("/predict/malware", tags=["AI"])
-async def predict_malware(req: MalwareRequest, request: Request):
+async def predict_malware(req: MalwareRequest, request: Request, _auth: bool = Depends(verify_api_key)):
     result = ai.predict_malware(req.image, req.model)
 
     # If malware detected, log it and alert dashboard
@@ -523,7 +525,7 @@ async def predict_malware(req: MalwareRequest, request: Request):
 
 
 @app.get("/models/status", tags=["AI"])
-def models_status():
+def models_status(_auth: bool = Depends(verify_api_key)):
     return ai.get_status()
 
 
@@ -533,6 +535,13 @@ def models_status():
 
 @app.websocket("/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
+    # Header-based FastAPI dependencies don't apply cleanly to WebSocket
+    # routes, so the key is passed as ?api_key=... on the connection URL
+    # instead and checked manually before accepting the connection.
+    supplied_key = websocket.query_params.get("api_key", "")
+    if not check_ws_api_key(supplied_key):
+        await websocket.close(code=1008)
+        return
     await ws_manager.connect(websocket)
     try:
         # Send welcome ping
@@ -557,6 +566,7 @@ async def websocket_alerts(websocket: WebSocket):
 def get_alerts(
     limit:        int           = Query(50, ge=1, le=500),
     acknowledged: Optional[bool] = None,
+    _auth:        bool           = Depends(verify_api_key),
 ):
     """Returns high-severity events for the Incident Alerts tab."""
     conn = db.get_connection()

@@ -88,7 +88,28 @@ else
 fi
 deactivate
 
-# ── Step 4 -- systemd service ────────────────────────────────────────────────
+# ── Step 4 -- API key ────────────────────────────────────────────────────────
+# Generated once and kept in server/.env, which the systemd service loads via
+# EnvironmentFile. Idempotent like everything else here -- re-running this
+# script (e.g. after a git pull) does NOT rotate the key or touch
+# SECEOKNIGHT_REQUIRE_API_KEY if a .env already exists, so it won't silently
+# flip enforcement on/off or invalidate a key you've already rolled out to
+# every agent/extension/dashboard.
+step "Checking API key"
+ENV_FILE="$INSTALL_DIR/server/.env"
+if [ -f "$ENV_FILE" ]; then
+    ok ".env already exists — keeping existing API key and enforcement setting"
+else
+    GENERATED_KEY="$(openssl rand -hex 32)"
+    cat > "$ENV_FILE" <<EOF
+SECEOKNIGHT_API_KEY=$GENERATED_KEY
+SECEOKNIGHT_REQUIRE_API_KEY=false
+EOF
+    chmod 600 "$ENV_FILE"
+    ok "Generated a new API key and saved it to server/.env (grace period: not yet enforced)"
+fi
+
+# ── Step 5 -- systemd service ────────────────────────────────────────────────
 # The repo's systemd/seceoknight.service and nginx/seceoknight.conf hardcode
 # /opt/seceoknight as WorkingDirectory/ExecStart/proxy.pac paths. If this repo
 # actually lives somewhere else (e.g. /opt/seceoknight/seceoknight-url-filter,
@@ -149,7 +170,7 @@ else
     exit 1
 fi
 
-# ── Step 5 -- Nginx reverse proxy ───────────────────────────────────────────
+# ── Step 6 -- Nginx reverse proxy ───────────────────────────────────────────
 step "Configuring Nginx"
 if [ -f /etc/nginx/sites-available/seceoknight ]; then
     cp /etc/nginx/sites-available/seceoknight "/etc/nginx/sites-available/seceoknight.bak.$(date +%s)"
@@ -166,7 +187,7 @@ else
     exit 1
 fi
 
-# ── Step 6 -- Firewall ────────────────────────────────────────────────────
+# ── Step 7 -- Firewall ────────────────────────────────────────────────────
 step "Opening firewall ports"
 if command -v ufw >/dev/null 2>&1; then
     ufw allow 22/tcp   >/dev/null
@@ -189,7 +210,7 @@ else
     warn "ufw not found — skipping firewall step (install ufw or configure iptables manually)"
 fi
 
-# ── Step 7 -- Seed default blocklist ────────────────────────────────────────
+# ── Step 8 -- Seed default blocklist ────────────────────────────────────────
 step "Seeding default blocklist rules"
 source "$INSTALL_DIR/venv/bin/activate"
 python3 scripts/add_default_blocklist.py
@@ -204,10 +225,20 @@ echo -e "${GREEN}  Installation complete${NC}"
 echo -e "${GREEN}=================================================${NC}"
 echo "  Detected LAN IP: $SERVER_IP"
 echo ""
+CURRENT_API_KEY="$(grep -oP '(?<=^SECEOKNIGHT_API_KEY=).*' "$ENV_FILE" 2>/dev/null || true)"
+if [ -n "$CURRENT_API_KEY" ]; then
+    echo -e "  ${YELLOW}API key: $CURRENT_API_KEY${NC}"
+    echo "  Not yet enforced (grace period) — the server accepts requests without it for now."
+    echo "  Give this key to: agent.py, to-server.py, malware_watcher.py, the Chrome extension's"
+    echo "  Settings panel, and the SIEM dashboard backend's URL_FILTER_API_KEY. Once every one"
+    echo "  of those is sending it (no more '[AUTH] WARNING' lines in the logs), set"
+    echo "  SECEOKNIGHT_REQUIRE_API_KEY=true in server/.env and restart the service to enforce it."
+    echo ""
+fi
 echo "  Verify it's working:"
 echo "    curl http://localhost/health"
-echo "    curl http://localhost/blocklist"
-echo "    curl http://localhost/api/stats"
+echo "    curl -H \"X-API-Key: \$KEY\" http://localhost/blocklist"
+echo "    curl -H \"X-API-Key: \$KEY\" http://localhost/api/stats"
 echo ""
 echo "  Full health check:"
 echo "    bash scripts/health_check.sh"

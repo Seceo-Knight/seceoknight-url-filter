@@ -16,13 +16,20 @@ import requests
 from datetime import datetime
 
 # -- Configuration -------------------------------------------------------------
-AGENT_VERSION = "1.1.0"   # bump this when shipping a meaningful endpoint-side change
+AGENT_VERSION = "1.2.0"   # bump this when shipping a meaningful endpoint-side change
                            # so the dashboard can tell which machines still need updating
 SERVER_IP     = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT   = 5001
 LOGS_FILE     = r"C:\url-block\logs.json"
 API_ENDPOINT  = f"http://{SERVER_IP}:{SERVER_PORT}/logs"
 HEARTBEAT_ENDPOINT  = f"http://{SERVER_IP}:{SERVER_PORT}/api/heartbeat"
+
+# API key -- optional while the server is in its auth "grace period"
+# (SECEOKNIGHT_REQUIRE_API_KEY=false), required once it's flipped to true.
+# Get this value from server/.env on the server (printed at the end of
+# install.sh), and set it here.
+API_KEY       = ""   # <-- Paste the key from the server's install.sh output
+REQUEST_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 HEARTBEAT_INTERVAL  = 60      # seconds between heartbeats -- keep in sync with
                                # STALE_THRESHOLD_MINUTES in server/database.py
 POLL_INTERVAL = 1       # seconds between file checks
@@ -89,7 +96,7 @@ def retry_pending_loop():
                 sent += 1   # unparseable -- drop it, retrying forever won't help
                 continue
             try:
-                resp = requests.post(API_ENDPOINT, json=entry, timeout=5)
+                resp = requests.post(API_ENDPOINT, json=entry, timeout=5, headers=REQUEST_HEADERS)
                 resp.raise_for_status()
                 sent += 1
             except Exception:
@@ -138,6 +145,7 @@ def heartbeat_loop():
                 HEARTBEAT_ENDPOINT,
                 json={"ip": ENDPOINT_IP, "hostname": ENDPOINT_HOSTNAME, "agent_version": AGENT_VERSION},
                 timeout=5,
+                headers=REQUEST_HEADERS,
             )
             _hb_fail_count = 0
         except Exception:

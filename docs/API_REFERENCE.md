@@ -6,6 +6,39 @@ Base URL: `http://YOUR_SERVER_IP:5001`  (or `http://YOUR_SERVER_IP` if Nginx is 
 
 ---
 
+## Authentication
+
+Every endpoint except `GET /health` expects an `X-API-Key` header. The key is
+generated once by `install.sh` and saved to `server/.env` — it's printed at
+the end of the install/reinstall output.
+
+```
+X-API-Key: <the key from server/.env>
+```
+
+**Grace period, by design.** A missing or wrong key is *not* rejected by
+default — the request is still allowed through, and the server logs a
+`[AUTH] WARNING` (throttled to once per 5 minutes) so you can tell it's
+happening. This is deliberate: it lets you roll the key out to every
+agent.py, to-server.py, malware_watcher.py, the Chrome extension, and the
+SIEM dashboard's backend on your own schedule, instead of an instant
+breaking change across every already-deployed machine.
+
+Once you've updated every client and the `[AUTH] WARNING` lines have stopped
+appearing in `journalctl -u seceoknight`, set in `server/.env`:
+
+```
+SECEOKNIGHT_REQUIRE_API_KEY=true
+```
+
+then `sudo systemctl restart seceoknight`. From that point, requests without
+a valid key get a `401 Unauthorized`.
+
+The WebSocket endpoint (`/ws/alerts`) can't use a header the same way — pass
+the key as a query parameter instead: `ws://YOUR_SERVER_IP:5001/ws/alerts?api_key=...`.
+
+---
+
 ## System
 
 ### GET /health
@@ -405,7 +438,7 @@ Real-time alert stream for the dashboard.
 
 **Connect:**
 ```javascript
-const ws = new WebSocket("ws://YOUR_SERVER_IP:5001/ws/alerts");
+const ws = new WebSocket("ws://YOUR_SERVER_IP:5001/ws/alerts?api_key=YOUR_KEY");
 ws.onmessage = (event) => {
   const alert = JSON.parse(event.data);
   console.log(alert);

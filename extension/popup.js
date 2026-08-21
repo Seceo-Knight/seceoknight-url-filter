@@ -12,22 +12,31 @@ const DEFAULT_SERVER_IP   = "192.168.1.63";
 const DEFAULT_SERVER_PORT = 5001;
 
 async function getServerConfig() {
-  const cfg = await chrome.storage.local.get(["serverIP", "serverPort"]);
+  const cfg = await chrome.storage.local.get(["serverIP", "serverPort", "apiKey"]);
   return {
     serverIP:   cfg.serverIP   || DEFAULT_SERVER_IP,
-    serverPort: cfg.serverPort || DEFAULT_SERVER_PORT
+    serverPort: cfg.serverPort || DEFAULT_SERVER_PORT,
+    apiKey:     cfg.apiKey     || ""
   };
+}
+
+function apiHeaders(apiKey) {
+  const headers = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  return headers;
 }
 
 async function loadStatus() {
   const loading = document.getElementById("loading");
   const content = document.getElementById("content");
 
-  const { serverIP, serverPort } = await getServerConfig();
+  const { serverIP, serverPort, apiKey } = await getServerConfig();
   const apiBase = `http://${serverIP}:${serverPort}`;
 
   try {
-    // Fetch server health
+    // Fetch server health (unauthenticated -- /health stays open even once
+    // the server enforces API keys, so this always works as a reachability
+    // check regardless of whether a key is configured yet)
     const healthRes = await fetch(`${apiBase}/health`, {
       signal: AbortSignal.timeout(4000)
     });
@@ -41,6 +50,7 @@ async function loadStatus() {
     // /api/my-stats identifies "this machine" server-side from the request's
     // own source IP, so there's nothing to configure here.
     const statsRes = await fetch(`${apiBase}/api/my-stats`, {
+      headers: apiHeaders(apiKey),
       signal: AbortSignal.timeout(4000)
     });
     const stats = await statsRes.json();
@@ -92,16 +102,18 @@ function ipOrHostnameLooksValid(value) {
 }
 
 async function initSettingsPanel() {
-  const { serverIP, serverPort } = await getServerConfig();
-  const ipInput   = document.getElementById("settings-ip");
-  const portInput = document.getElementById("settings-port");
-  const saveBtn   = document.getElementById("settings-save");
-  const statusEl  = document.getElementById("settings-status");
-  const toggle    = document.getElementById("settings-toggle");
-  const panel     = document.getElementById("settings-panel");
+  const { serverIP, serverPort, apiKey } = await getServerConfig();
+  const ipInput     = document.getElementById("settings-ip");
+  const portInput   = document.getElementById("settings-port");
+  const apiKeyInput = document.getElementById("settings-apikey");
+  const saveBtn     = document.getElementById("settings-save");
+  const statusEl    = document.getElementById("settings-status");
+  const toggle      = document.getElementById("settings-toggle");
+  const panel       = document.getElementById("settings-panel");
 
-  ipInput.value   = serverIP;
-  portInput.value = serverPort;
+  ipInput.value     = serverIP;
+  portInput.value   = serverPort;
+  apiKeyInput.value = apiKey;
 
   toggle.addEventListener("click", () => {
     const isOpen = panel.style.display === "block";
@@ -110,8 +122,9 @@ async function initSettingsPanel() {
   });
 
   saveBtn.addEventListener("click", async () => {
-    const newIp   = ipInput.value.trim();
-    const newPort = parseInt(portInput.value.trim(), 10);
+    const newIp     = ipInput.value.trim();
+    const newPort   = parseInt(portInput.value.trim(), 10);
+    const newApiKey = apiKeyInput.value.trim();
 
     if (!ipOrHostnameLooksValid(newIp)) {
       statusEl.textContent = "Enter a valid IP address or hostname (e.g. 192.168.1.63)";
@@ -124,7 +137,7 @@ async function initSettingsPanel() {
       return;
     }
 
-    await chrome.storage.local.set({ serverIP: newIp, serverPort: newPort });
+    await chrome.storage.local.set({ serverIP: newIp, serverPort: newPort, apiKey: newApiKey });
     statusEl.textContent = "Saved — reconnecting…";
     statusEl.style.color = "#2ecc71";
 

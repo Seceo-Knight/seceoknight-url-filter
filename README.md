@@ -141,6 +141,22 @@ script, they're documented individually in [docs/SERVER_SETUP.md](docs/SERVER_SE
 When it finishes, it prints your server's detected LAN IP and a few `curl` commands to
 verify everything's running — run those now before moving on to Part 2.
 
+It also generates an **API key** and saves it to `server/.env`, printing it once at the
+end of the install. Every endpoint except `/health` expects this key in an `X-API-Key`
+header — but it isn't enforced yet. The server starts in a "grace period": requests
+without the key are still allowed through (just logged as a warning), so nothing breaks
+on machines you haven't updated yet. Copy the printed key into:
+
+- `endpoint/agent.py` and `endpoint/to-server.py` and `endpoint/malware_watcher.py` — set
+  the `API_KEY` variable near the top of each
+- The Chrome extension's popup → ⚙ Change Server → the API key field
+- The SIEM dashboard backend's `.env` → `URL_FILTER_API_KEY`
+
+Once every machine has been updated and you stop seeing `[AUTH] WARNING` lines in
+`sudo journalctl -u seceoknight`, set `SECEOKNIGHT_REQUIRE_API_KEY=true` in
+`server/.env` and `sudo systemctl restart seceoknight` to start actually rejecting
+unauthenticated requests. Full details: [docs/API_REFERENCE.md](docs/API_REFERENCE.md#authentication).
+
 ---
 
 ## Step 5 — Managing the Blocklist (Add / Remove / Update Rules)
@@ -530,6 +546,11 @@ extension, and it's why deploying to a different office never requires editing
 
 On first install, it defaults to `192.168.1.63:5001` — if that's already your server's
 address, you can skip this step entirely.
+
+The same panel has an **API key** field. Paste in the key `install.sh` printed on the
+server. It's optional while the server is still in its auth grace period, but once
+`SECEOKNIGHT_REQUIRE_API_KEY=true` is set server-side, the popup and phishing detection
+will stop working on this machine until the key is entered here.
 
 ### Step 3 — Verify It Works
 
