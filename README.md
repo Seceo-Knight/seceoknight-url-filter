@@ -157,6 +157,50 @@ Once every machine has been updated and you stop seeing `[AUTH] WARNING` lines i
 `server/.env` and `sudo systemctl restart seceoknight` to start actually rejecting
 unauthenticated requests. Full details: [docs/API_REFERENCE.md](docs/API_REFERENCE.md#authentication).
 
+### Turning On Enforcement (Do This Last, Once Every Machine Is Updated)
+
+Don't do this until every Windows machine, the Chrome extension, and the SIEM dashboard are
+confirmed sending the API key — turning it on early will lock out anything that isn't
+updated yet.
+
+**1. Check nothing is still missing the key.** On the server:
+```bash
+sudo journalctl -u seceoknight --since "1 hour ago" | grep -i "AUTH"
+```
+If this shows recent `[AUTH] WARNING` lines, something out there still isn't sending the
+key — find and update it before continuing. If it shows nothing (or only old lines from
+before you finished rolling it out), you're clear.
+
+**2. Edit the server's `.env` file:**
+```bash
+nano /opt/seceoknight/seceoknight-url-filter/server/.env
+```
+Change:
+```
+SECEOKNIGHT_REQUIRE_API_KEY=false
+```
+to:
+```
+SECEOKNIGHT_REQUIRE_API_KEY=true
+```
+Save and exit (in `nano`: `Ctrl+O`, `Enter`, then `Ctrl+X`).
+
+**3. Restart the server so the change takes effect:**
+```bash
+sudo systemctl restart seceoknight
+```
+
+**4. Verify it's actually enforcing now** — a request without the key should be rejected:
+```bash
+curl -s -o /dev/null -w "no key: HTTP %{http_code}\n" http://127.0.0.1:5001/api/stats
+```
+This should now print `HTTP 401` (it printed `HTTP 200` during the grace period). Then
+confirm a request *with* the key still works:
+```bash
+curl -s -o /dev/null -w "with key: HTTP %{http_code}\n" -H "X-API-Key: YOUR_KEY_HERE" http://127.0.0.1:5001/api/stats
+```
+This should print `HTTP 200`. If both look right, enforcement is fully on.
+
 ---
 
 ## Step 5 — Managing the Blocklist (Add / Remove / Update Rules)
