@@ -47,6 +47,15 @@ LEGITIMATE_DOMAINS = [
     "github.com", "stackoverflow.com", "wikipedia.org", "youtube.com",
     "netflix.com", "spotify.com", "paypal.com", "ebay.com", "yahoo.com",
     "bing.com", "duckduckgo.com", "mozilla.org",
+    # Added 2026-08-21 after real production false positives. The phishing
+    # model only sees the URL text itself (no reputation/age/traffic data),
+    # so any legitimate site it wasn't trained on reads as "unfamiliar" --
+    # the same signal a freshly-registered phishing domain gives off. These
+    # scored 0.56-0.98 ("phishing") in real traffic despite being well-known,
+    # legitimate sites.
+    "chatgpt.com", "chat.openai.com", "openai.com",
+    "putty.org", "chiark.greenend.org.uk",
+    "virustotal.com", "filebin.net",
 ]
 
 
@@ -138,14 +147,29 @@ def predict_phishing(url: str) -> dict:
         seq    = _tokenizer.texts_to_sequences([url])
         padded = pad_sequences(seq, maxlen=MAX_SEQUENCE_LENGTH)
         pred   = float(_phishing_model.predict(padded, verbose=0)[0][0])
-        label  = pred > 0.5
-        conf   = "High" if abs(pred - 0.5) > 0.3 else "Medium"
+
+        # Decision threshold raised from a naive >0.5 to >0.90. A bare
+        # majority vote gives no margin -- a borderline 0.56 was previously
+        # treated identically (full "High"/blocked) to a genuine 0.9997
+        # real-phishing score. threat_level now reflects the actual score
+        # instead of always being "High", so the dashboard/extension can
+        # stop showing every flag at maximum severity.
+        label = pred > 0.90
+        if pred >= 0.97:
+            threat_level = "High"
+        elif pred >= 0.90:
+            threat_level = "Medium"
+        else:
+            threat_level = "Low"
+        conf = "High" if abs(pred - 0.5) > 0.3 else "Medium"
+
         return {
-            "phishing":    label,
-            "score":       round(pred, 4),
-            "confidence":  conf,
-            "whitelisted": False,
-            "error":       None,
+            "phishing":     label,
+            "score":        round(pred, 4),
+            "confidence":   conf,
+            "threat_level": threat_level,
+            "whitelisted":  False,
+            "error":        None,
         }
     except Exception as e:
         return {"error": str(e), "phishing": None, "score": None}

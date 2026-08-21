@@ -465,7 +465,7 @@ async def predict_phishing(req: PhishingRequest, request: Request):
             "blocked":      True,
             "block_type":   "ai_phishing",
             "ai_score":     result.get("score"),
-            "threat_level": "High",
+            "threat_level": result.get("threat_level", "High"),
             "client_ip":    caller_ip,
             "endpoint_ip":  caller_ip,
         }
@@ -476,7 +476,7 @@ async def predict_phishing(req: PhishingRequest, request: Request):
             "url":        req.url,
             "score":      result.get("score"),
             "confidence": result.get("confidence"),
-            "threat_level": "High",
+            "threat_level": result.get("threat_level", "High"),
         })
 
     return result
