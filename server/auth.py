@@ -65,7 +65,8 @@ def verify_api_key(request: Request, x_api_key: str = Header(default="", alias="
     if REQUIRE_API_KEY:
         raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header")
     client_ip = request.client.host if request.client else "unknown"
-    _grace_period_warn(f"{client_ip} -> {request.method} {request.url.path}")
+    ua = request.headers.get("user-agent", "no-user-agent")
+    _grace_period_warn(f"{client_ip} -> {request.method} {request.url.path}  (User-Agent: {ua})")
     return True
 
 

@@ -161,7 +161,7 @@ def send_log(entry: dict):
     later retry instead of dropping it if the server is unreachable."""
     global _fail_count
     try:
-        resp = requests.post(API_ENDPOINT, json=entry, timeout=5)
+        resp = requests.post(API_ENDPOINT, json=entry, timeout=5, headers=REQUEST_HEADERS)
         resp.raise_for_status()
         _fail_count = 0
         if entry.get("blocked"):
