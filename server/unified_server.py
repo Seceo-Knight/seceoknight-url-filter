@@ -539,7 +539,8 @@ async def websocket_alerts(websocket: WebSocket):
     # routes, so the key is passed as ?api_key=... on the connection URL
     # instead and checked manually before accepting the connection.
     supplied_key = websocket.query_params.get("api_key", "")
-    if not check_ws_api_key(supplied_key):
+    ws_client_ip = websocket.client.host if websocket.client else "unknown"
+    if not check_ws_api_key(supplied_key, ws_client_ip):
         await websocket.close(code=1008)
         return
     await ws_manager.connect(websocket)

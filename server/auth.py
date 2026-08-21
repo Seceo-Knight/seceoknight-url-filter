@@ -28,31 +28,35 @@ this deployment has already hit twice with install.sh. Instead:
 
 import os
 import time
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 API_KEY = os.environ.get("SECEOKNIGHT_API_KEY", "")
 REQUIRE_API_KEY = os.environ.get("SECEOKNIGHT_REQUIRE_API_KEY", "false").strip().lower() == "true"
 
-_last_warn_time = 0.0
-_WARN_INTERVAL_SEC = 300  # avoid flooding the journal during the grace period
+# Throttled PER SOURCE (client IP + path), not globally -- a single global
+# throttle collapsed every offender into one generic message, making it
+# impossible to tell which machine (or the dashboard) was still missing the
+# key. Keyed per source so each distinct offender surfaces on its own,
+# still capped to once per 5 minutes each so a busy source doesn't flood
+# the journal.
+_last_warn_by_source: dict[str, float] = {}
+_WARN_INTERVAL_SEC = 300
 
 
-def _grace_period_warn():
-    global _last_warn_time
+def _grace_period_warn(source: str):
     now = time.time()
-    if now - _last_warn_time > _WARN_INTERVAL_SEC:
+    last = _last_warn_by_source.get(source, 0.0)
+    if now - last > _WARN_INTERVAL_SEC:
         print(
-            "[AUTH] WARNING: request(s) received without a valid X-API-Key header. "
-            "Currently ALLOWED (grace period). Update every agent.py / to-server.py / "
-            "malware_watcher.py / the Chrome extension / the SIEM dashboard's "
-            "URL_FILTER_API_KEY to send the key, then set "
-            "SECEOKNIGHT_REQUIRE_API_KEY=true in the server's .env once no more of "
+            f"[AUTH] WARNING: request without a valid X-API-Key header from {source}. "
+            "Currently ALLOWED (grace period). Update that source to send the key, then "
+            "set SECEOKNIGHT_REQUIRE_API_KEY=true in the server's .env once no more of "
             "these warnings appear."
         )
-        _last_warn_time = now
+        _last_warn_by_source[source] = now
 
 
-def verify_api_key(x_api_key: str = Header(default="", alias="X-API-Key")) -> bool:
+def verify_api_key(request: Request, x_api_key: str = Header(default="", alias="X-API-Key")) -> bool:
     """FastAPI dependency -- add `_auth: bool = Depends(verify_api_key)` to any route."""
     if not API_KEY:
         return True  # no key configured yet -- nothing to enforce
@@ -60,11 +64,12 @@ def verify_api_key(x_api_key: str = Header(default="", alias="X-API-Key")) -> bo
         return True
     if REQUIRE_API_KEY:
         raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header")
-    _grace_period_warn()
+    client_ip = request.client.host if request.client else "unknown"
+    _grace_period_warn(f"{client_ip} -> {request.method} {request.url.path}")
     return True
 
 
-def check_ws_api_key(supplied_key: str) -> bool:
+def check_ws_api_key(supplied_key: str, client_ip: str = "unknown") -> bool:
     """Same logic as verify_api_key, for the /ws/alerts WebSocket route, which
     can't use a header-based FastAPI dependency the same way -- the key is
     passed as a ?api_key= query parameter on the connection URL instead."""
@@ -74,5 +79,5 @@ def check_ws_api_key(supplied_key: str) -> bool:
         return True
     if REQUIRE_API_KEY:
         return False
-    _grace_period_warn()
+    _grace_period_warn(f"{client_ip} -> WS /ws/alerts")
     return True
