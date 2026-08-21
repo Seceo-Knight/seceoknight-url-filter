@@ -110,6 +110,31 @@ To verify the blocklist is being fetched, look at the mitmproxy terminal — you
 - Wrong IP: check `SERVER_IP` in `to-server.py`
 - Firewall: `sudo ufw status` — port 5001 must be allowed
 
+### Invoke-WebRequest to GitHub fails with "Blocked by SecEoKnight — Regex rule matched"
+
+The default blocklist includes a regex rule blocking script/executable downloads
+(`.ps1`, `.exe`, `.bat`, etc.) — once mitmproxy is active on a machine, that rule also
+blocks the machine's own future updates (`setup.ps1`, `agent.py`, etc.), since those are
+served from the same domains. Fixed at the source in `agent.py` — `raw.githubusercontent.com`,
+`github.com`, `codeload.github.com`, and `objects.githubusercontent.com` are always allowed
+regardless of blocklist rules. If you're on an older `agent.py` that predates this fix,
+either update it (see "Useful Server Commands" → updating endpoints) or work around it
+one time with:
+```powershell
+$wc = New-Object System.Net.WebClient
+$wc.Proxy = $null
+$wc.DownloadFile("https://raw.githubusercontent.com/YOUR_ORG/seceoknight-url-filter/main/endpoint/setup.ps1", "$env:TEMP\setup.ps1")
+```
+
+### Server API requests getting a 401 Unauthorized
+
+The server's API key enforcement is on (`SECEOKNIGHT_REQUIRE_API_KEY=true` in `server/.env`)
+and the caller isn't sending a valid `X-API-Key` header. Check: the Chrome extension's
+Settings panel has the current key, `agent.py`/`to-server.py`/`malware_watcher.py` have
+`API_KEY` set to the current key, and the SIEM dashboard backend's `.env` has
+`URL_FILTER_API_KEY` set. The current key is in `server/.env` on the server (`SECEOKNIGHT_API_KEY=`).
+See [docs/API_REFERENCE.md](API_REFERENCE.md#authentication) for the full rollout process.
+
 ---
 
 ## Dashboard Issues

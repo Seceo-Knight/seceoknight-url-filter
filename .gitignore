@@ -14,3 +14,17 @@ server/*.db-shm
 
 # Logs
 *.log
+
+# Server secrets -- generated per-deployment by install.sh, never committed
+server/.env
+
+# Extension signing key -- generated once by scripts/package_extension.sh.
+# NEVER commit this. It's what keeps the extension ID stable across rebuilds;
+# if it leaks, back it up and rotate it, then re-run the packaging script and
+# update the ID in every machine's Group Policy.
+extension/key.pem
+
+# Extension build output -- rebuilt from source by scripts/package_extension.sh,
+# not committed. Deploy it to the server's extension-dist/ instead.
+extension-dist/
+scripts/crx_tool/node_modules/

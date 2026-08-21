@@ -278,6 +278,27 @@ class VideoBlockerSafe:
         path   = parsed.path or "/"
         query  = parse_qs(parsed.query or "")
 
+        # 0) Trusted update infrastructure -- always allowed, before any
+        # blocklist rule gets a chance to match. Without this, the default
+        # regex rule that blocks script/executable downloads (.ps1, .exe,
+        # .bat, etc. -- see scripts/add_default_blocklist.py) also blocks
+        # setup.ps1 itself and the endpoint's own update files once mitmproxy
+        # is active and protecting the machine, since they're served from
+        # these same domains. That's a real bootstrapping trap: a machine
+        # this tool protects can no longer fetch its own updates. Confirmed
+        # in production 2026-08-21 -- Invoke-WebRequest for setup.ps1 got
+        # blocked with "Regex rule matched" on an already-protected machine.
+        UPDATE_SOURCE_HOSTS = (
+            "raw.githubusercontent.com",
+            "github.com",
+            "codeload.github.com",
+            "objects.githubusercontent.com",
+        )
+        if any(host == h or host.endswith("." + h) for h in UPDATE_SOURCE_HOSTS):
+            with self._lock:
+                self.counters["allowed"] += 1
+            return
+
         # 1) YouTube watch page -- block by video ID
         if self._is_watch_path(path):
             vlist = query.get("v", [])

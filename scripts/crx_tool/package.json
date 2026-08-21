@@ -1,0 +1,8 @@
+{
+  "name": "seceoknight-crx-tool",
+  "private": true,
+  "description": "Signs the SecEoKnight Chrome extension into a .crx3 + update.xml for Group Policy force-install. Not part of the server or extension itself -- just a build tool.",
+  "dependencies": {
+    "crx": "5.0.1"
+  }
+}
