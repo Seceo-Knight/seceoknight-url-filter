@@ -46,7 +46,7 @@ BLOCKLIST_URL = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
 # (SECEOKNIGHT_REQUIRE_API_KEY=false), required once it's flipped to true.
 # Get this value from server/.env on the server (printed at the end of
 # install.sh), and set it here.
-API_KEY = ""   # <-- Paste the key from the server's install.sh output
+API_KEY = "c587daf8474f912561f01c3b960fe080f84497271f4e6efe23854ccdefe1f193"
 
 LOG_PATH     = r"C:\url-block\logs.json"
 REQUEST_TIMEOUT  = 10
