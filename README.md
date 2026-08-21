@@ -201,6 +201,56 @@ curl -s -o /dev/null -w "with key: HTTP %{http_code}\n" -H "X-API-Key: YOUR_KEY_
 ```
 This should print `HTTP 200`. If both look right, enforcement is fully on.
 
+### Reducing AI Phishing False Positives with Google Safe Browsing (Recommended)
+
+The local phishing model only ever sees the URL's text — no reputation, age, or traffic
+data — so it will keep misflagging legitimate sites it wasn't trained on (this has happened
+in real traffic with chatgpt.com, putty.org, virustotal.com, dropbox.com, slack.com,
+medium.com, discord.com, and accounts.zoho.in — all real businesses, some scored 100%
+"phishing"). No amount of threshold tuning fixes this reliably, since real phishing and
+false positives have scored within a hair of each other in testing.
+
+Google Safe Browsing — the same real-time, continuously-updated database Chrome itself
+checks against — fixes this properly, and it's **free for non-commercial use** (no credit
+card, no billing setup). Configuring it makes it the primary signal: if Safe Browsing
+hasn't flagged a URL, it's treated as safe regardless of what the local model says. The
+local model still runs as a secondary check for brand-new phishing domains Safe Browsing
+hasn't indexed yet, but its detections are shown as "unconfirmed" rather than a full block.
+
+**Get a free API key:**
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with any
+   Google account
+2. Create a new project (top-left project selector → New Project) — name it anything, e.g.
+   "seceoknight"
+3. In the search bar, search for **"Safe Browsing API"** and open it
+4. Click **Enable**
+5. Go to **APIs & Services → Credentials → Create Credentials → API key**
+6. Copy the generated key
+
+**Configure the server:**
+```bash
+nano /opt/seceoknight/seceoknight-url-filter/server/.env
+```
+Add this line:
+```
+SECEOKNIGHT_SAFE_BROWSING_KEY=paste-your-key-here
+```
+Save, then:
+```bash
+sudo systemctl restart seceoknight
+```
+
+**Verify it's working:**
+```bash
+curl -X POST http://127.0.0.1:5001/predict/phishing -H "Content-Type: application/json" -d '{"url": "https://accounts.zoho.in/"}'
+```
+The response should include `"source": "safe_browsing"` or fall through cleanly to the
+local model with `phishing: false` — either way, no more false "blocked" alert on
+legitimate sites like this.
+
+This is entirely optional — leave `SECEOKNIGHT_SAFE_BROWSING_KEY` unset and the server
+behaves exactly as before (local model + manual whitelist only).
+
 ---
 
 ## Step 5 — Managing the Blocklist (Add / Remove / Update Rules)

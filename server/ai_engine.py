@@ -19,10 +19,33 @@ and returns an error response for that model type only.
 
 import os
 import io
+import time
 import base64
 import numpy as np
+import requests
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+
+# ── Google Safe Browsing (optional, real threat-intel backstop) ────────────────
+# The local BiLSTM model only ever sees the URL's text -- no reputation, age,
+# or traffic data -- so it keeps flagging legitimate-but-unfamiliar sites as
+# phishing (chatgpt.com, putty.org, virustotal.com, dropbox.com, slack.com,
+# medium.com, discord.com, accounts.zoho.in all hit this in real production
+# traffic on 2026-08-21, some at 100% "confidence"). No threshold survives
+# that: a real phishing test sample scored 0.9997 while a false positive
+# (medium.com) scored 0.9917 -- a gap too thin to tune around.
+#
+# Safe Browsing is the same database Chrome itself uses, continuously updated
+# from real-world data, free for non-commercial use. Configuring
+# SECEOKNIGHT_SAFE_BROWSING_KEY makes it the primary signal: if Safe Browsing
+# has NOT flagged a URL, it's treated as safe regardless of what the fragile
+# local model says, which is what actually stops known-legitimate sites from
+# being misreported. The local model still runs as a secondary, much lower
+# confidence signal for brand-new phishing domains Safe Browsing hasn't
+# indexed yet. Leave the key unset and behavior is unchanged (local model +
+# whitelist only).
+SAFE_BROWSING_API_KEY = os.environ.get("SECEOKNIGHT_SAFE_BROWSING_KEY", "").strip()
+SAFE_BROWSING_URL = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
 
 # ── State ─────────────────────────────────────────────────────────────────────
 _phishing_model    = None
@@ -56,6 +79,7 @@ LEGITIMATE_DOMAINS = [
     "chatgpt.com", "chat.openai.com", "openai.com",
     "putty.org", "chiark.greenend.org.uk",
     "virustotal.com", "filebin.net",
+    "zoho.com", "zoho.in", "accounts.zoho.in", "accounts.zoho.com",
 ]
 
 
@@ -125,18 +149,74 @@ def _is_whitelisted(url: str) -> bool:
     return False
 
 
+def _check_safe_browsing(url: str) -> "bool | None":
+    """
+    Queries Google Safe Browsing's threatMatches:find endpoint.
+    Returns:
+      True  -- Safe Browsing has this URL flagged as a known threat
+      False -- Safe Browsing does NOT have this URL flagged (checked, clean)
+      None  -- couldn't determine (no key configured, network error, timeout)
+    Fails closed on error in the sense that matters here: on any failure we
+    return None and the caller falls back to local-model-only behavior,
+    exactly like before this integration existed -- never blocks a request
+    or crashes the caller just because Google's API had a bad moment.
+    """
+    if not SAFE_BROWSING_API_KEY:
+        return None
+    try:
+        body = {
+            "client": {"clientId": "seceoknight", "clientVersion": "1.0.0"},
+            "threatInfo": {
+                "threatTypes": [
+                    "MALWARE", "SOCIAL_ENGINEERING",
+                    "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION",
+                ],
+                "platformTypes": ["ANY_PLATFORM"],
+                "threatEntryTypes": ["URL"],
+                "threatEntries": [{"url": url}],
+            },
+        }
+        resp = requests.post(
+            SAFE_BROWSING_URL,
+            params={"key": SAFE_BROWSING_API_KEY},
+            json=body,
+            timeout=3,
+        )
+        if resp.status_code != 200:
+            return None
+        matches = resp.json().get("matches", [])
+        return len(matches) > 0
+    except Exception:
+        return None
+
+
 def predict_phishing(url: str) -> dict:
     """
     Returns:
       { phishing: bool, score: float, confidence: str,
-        whitelisted: bool, error: str|None }
+        whitelisted: bool, source: str, error: str|None }
     """
     if not url:
         return {"error": "No URL provided"}
 
     if _is_whitelisted(url):
         return {"phishing": False, "score": 0.0,
-                "confidence": "High (Whitelisted)", "whitelisted": True}
+                "confidence": "High (Whitelisted)", "whitelisted": True,
+                "source": "whitelist"}
+
+    # Safe Browsing first, if configured -- it's the same continuously
+    # updated database Chrome itself checks against, so it's a far more
+    # reliable signal than the local model for anything it has an opinion
+    # on. A confirmed match is trusted outright; the local model isn't even
+    # consulted in that case.
+    sb_result = _check_safe_browsing(url)
+    if sb_result is True:
+        return {
+            "phishing": True, "score": 1.0,
+            "confidence": "Confirmed (Google Safe Browsing)",
+            "threat_level": "High", "whitelisted": False,
+            "source": "safe_browsing", "error": None,
+        }
 
     if _phishing_model is None or _tokenizer is None:
         return {"error": "Phishing model not loaded",
@@ -156,20 +236,25 @@ def predict_phishing(url: str) -> dict:
         # 0.976). The one confirmed real-phishing sample we have scored
         # 0.9997 -- only 0.008 above medium.com's false positive. That gap
         # is too thin for this model's raw score to reliably separate
-        # "legitimate site" from "actual phishing" below near-certainty, so
-        # only near-certain scores are now treated as a genuine detection.
-        # Everything below that is still returned/logged (useful telemetry)
-        # but is no longer labelled "phishing"/"High" severity, since the
-        # model's precision in that range isn't trustworthy enough to show
-        # end users a red "blocked" alert on it.
+        # "legitimate site" from "actual phishing" below near-certainty.
         label = pred >= 0.995
-        if pred >= 0.995:
-            threat_level = "High"
-        elif pred >= 0.90:
-            threat_level = "Low"      # informational only -- not shown as blocked
-        else:
-            threat_level = "Low"
+        threat_level = "High" if pred >= 0.995 else "Low"
         conf = "High" if abs(pred - 0.5) > 0.3 else "Medium"
+        source = "local_model"
+
+        # sb_result is False here means Safe Browsing was checked and came
+        # back CLEAN -- not "unknown", genuinely checked and not flagged.
+        # That's strong evidence against the local model's own high score,
+        # since every false positive seen in production so far (chatgpt,
+        # putty, virustotal, dropbox, slack, medium, discord, zoho) is a
+        # site Safe Browsing would never flag. Demote instead of trusting
+        # the fragile local score alone: still visible for review, but no
+        # longer shown as a confident "blocked" phishing alert.
+        if sb_result is False and label:
+            label = False
+            threat_level = "Low"
+            conf = f"Unconfirmed (local model {round(pred,4)}, not found in Safe Browsing)"
+            source = "local_model_unconfirmed"
 
         return {
             "phishing":     label,
@@ -177,6 +262,7 @@ def predict_phishing(url: str) -> dict:
             "confidence":   conf,
             "threat_level": threat_level,
             "whitelisted":  False,
+            "source":       source,
             "error":        None,
         }
     except Exception as e:

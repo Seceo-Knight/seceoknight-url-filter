@@ -386,10 +386,23 @@ Check if a URL is phishing. Called by Chrome extension.
   "phishing": true,
   "score": 0.9234,
   "confidence": "High",
+  "threat_level": "High",
   "whitelisted": false,
+  "source": "safe_browsing",
   "error": null
 }
 ```
+
+`source` explains what actually made the decision:
+- `whitelist` — matched `LEGITIMATE_DOMAINS`, never reached any model
+- `safe_browsing` — Google Safe Browsing confirmed this as a known threat (only present
+  if `SECEOKNIGHT_SAFE_BROWSING_KEY` is configured — see README "Reducing AI Phishing
+  False Positives")
+- `local_model` — the local BiLSTM scored it ≥0.995 and Safe Browsing either isn't
+  configured or hasn't indexed this URL either way
+- `local_model_unconfirmed` — the local model scored it high, but Safe Browsing checked
+  and came back clean, so `phishing` is forced to `false` — shown for admin visibility,
+  not treated as a real detection
 
 ### GET /predict/phishing?url=...
 Same as POST but via query param.
