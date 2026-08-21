@@ -217,15 +217,22 @@ hasn't flagged a URL, it's treated as safe regardless of what the local model sa
 local model still runs as a secondary check for brand-new phishing domains Safe Browsing
 hasn't indexed yet, but its detections are shown as "unconfirmed" rather than a full block.
 
-**Get a free API key:**
+**Get a free API key (about 2 minutes, no credit card):**
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with any
-   Google account
-2. Create a new project (top-left project selector → New Project) — name it anything, e.g.
-   "seceoknight"
-3. In the search bar, search for **"Safe Browsing API"** and open it
-4. Click **Enable**
-5. Go to **APIs & Services → Credentials → Create Credentials → API key**
-6. Copy the generated key
+   Google account (a personal Gmail account is fine)
+2. Top-left project dropdown → **New Project** → name it anything, e.g. "seceoknight" →
+   **Create**
+3. Once it's created and selected, use the search bar at the top and type **"Safe Browsing
+   API"** → click it when it appears
+4. Click the blue **Enable** button
+5. Go to **APIs & Services → Credentials** (or just search "Credentials" in the top search
+   bar)
+6. Click **+ Create Credentials** → **API key**
+7. A popup shows the new key and asks about **API restrictions**. Choose **Restrict key**,
+   then check the box next to **Safe Browsing API** only (leave everything else unchecked)
+   → **Save**. This locks the key so it can only be used to check URLs — even if it ever
+   leaked, it couldn't be used for anything else on the account that created it.
+8. Copy the key (starts with `AIzaSy...`)
 
 **Configure the server:**
 ```bash
@@ -235,18 +242,28 @@ Add this line:
 ```
 SECEOKNIGHT_SAFE_BROWSING_KEY=paste-your-key-here
 ```
-Save, then:
+Save (`Ctrl+O`, `Enter`, `Ctrl+X`), then:
 ```bash
 sudo systemctl restart seceoknight
 ```
 
-**Verify it's working:**
+**Verify it's genuinely working** — testing against a normal site like `accounts.zoho.in`
+isn't a real test if it's already on the whitelist (it short-circuits before Safe Browsing
+is even called). Use Google's own official Safe Browsing test URL instead, which is
+designed to always come back as a confirmed threat:
 ```bash
-curl -X POST http://127.0.0.1:5001/predict/phishing -H "Content-Type: application/json" -d '{"url": "https://accounts.zoho.in/"}'
+curl -X POST http://127.0.0.1:5001/predict/phishing \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_SECEOKNIGHT_API_KEY" \
+  -d '{"url": "http://testsafebrowsing.appspot.com/s/phishing.html"}'
 ```
-The response should include `"source": "safe_browsing"` or fall through cleanly to the
-local model with `phishing: false` — either way, no more false "blocked" alert on
-legitimate sites like this.
+This should return `"phishing": true` and `"source": "safe_browsing"`. If it instead falls
+through to `"source": "local_model"`, the key isn't working — double-check it was pasted
+correctly into `server/.env` and that the server was restarted after saving.
+
+This test call gets logged to the dashboard like a real detection, since it's a real hit
+against a real (if fake-for-testing) threat — that's expected, not a bug, and safe to
+ignore or delete from the Events tab.
 
 This is entirely optional — leave `SECEOKNIGHT_SAFE_BROWSING_KEY` unset and the server
 behaves exactly as before (local model + manual whitelist only).
