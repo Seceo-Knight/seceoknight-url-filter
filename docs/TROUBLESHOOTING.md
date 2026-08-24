@@ -129,6 +129,25 @@ This is a known, industry-wide limitation of any TLS-inspecting proxy (not speci
 every enterprise proxy vendor (Zscaler, Netskope, Fortinet, etc.) requires the same QUIC-disable
 step for the same reason.
 
+**If QUIC is already disabled and it still plays** (test in an Incognito window — if Incognito
+blocks it correctly but your normal window doesn't, this is the cause): the browser's normal
+profile already has the page/video cached locally from a **previous visit before the rule was
+added**, and can serve it from disk cache / YouTube's Service Worker without ever sending a new
+network request — so there's nothing for the proxy to see or block. This only affects content the
+user already visited before it was blocked; anything blocked before a first visit is unaffected.
+Fix, on the affected machine:
+
+1. `chrome://settings/clearBrowserData` → time range **All time** → check **Cookies and other
+   site data** and **Cached images and files** → **Clear data**
+2. Fully close and reopen the browser
+3. If it's still not blocked: DevTools (F12) → **Application** tab → **Service Workers** → find
+   the one registered for the site → **Unregister** (a cache clear alone doesn't always remove
+   these)
+
+Confirmed as the second half of this same symptom in production 2026-08-24 — QUIC fix alone
+resolved a fresh Incognito test, but the normal profile still played a previously-watched video
+until cache was cleared.
+
 ### to-server.py shows "Cannot reach server"
 
 - Server might be down: `sudo systemctl status seceoknight`
