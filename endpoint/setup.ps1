@@ -430,6 +430,38 @@ Set-ItemProperty -Path $HKCUReg -Name AutoDetect     -Value 0
 Write-Ok "Browser proxy  -> PAC: $PacUrl (falls back to DIRECT if proxy is down)"
 
 # =============================================================================
+# STEP 11B -- Disable QUIC/HTTP3 (close the proxy-bypass hole)
+# =============================================================================
+# Chrome and Edge use QUIC (HTTP/3, sent over UDP 443) for Google properties
+# such as youtube.com and googlevideo.com by default. QUIC is its own
+# transport -- it does NOT go through the PAC-configured proxy above, so any
+# traffic sent over QUIC never reaches mitmproxy/agent.py at all. In practice
+# this means: the YouTube page itself loads through the proxy and gets
+# blocked correctly, but once the page is open, the browser can fall back to
+# QUIC for the video-streaming API calls and CDN segments, and that traffic
+# streams straight past the filter unseen. This is a well-known bypass for
+# any TLS-inspecting proxy, not specific to this tool.
+#
+# Fix: force Chrome/Edge to disable QUIC via the official enterprise policy
+# (QuicAllowed=0). This makes the browser fall back to normal TCP/TLS for
+# everything, which the proxy above can see and enforce rules against.
+# Confirmed root cause of "blocked_watch alert appears but video still
+# plays" reports -- production 2026-08-24.
+Write-Step "Disabling QUIC/HTTP3 in Chrome and Edge (closes proxy-bypass hole)"
+
+$QuicPolicyPaths = @(
+    "HKLM:\SOFTWARE\Policies\Google\Chrome",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+)
+foreach ($p in $QuicPolicyPaths) {
+    if (-not (Test-Path $p)) {
+        New-Item -Path $p -Force | Out-Null
+    }
+    Set-ItemProperty -Path $p -Name "QuicAllowed" -Value 0 -Type DWord
+}
+Write-Ok "QUIC disabled for Chrome + Edge (policy takes effect on next browser restart)"
+
+# =============================================================================
 # STEP 12 -- Start services
 # =============================================================================
 Write-Step "Starting services"

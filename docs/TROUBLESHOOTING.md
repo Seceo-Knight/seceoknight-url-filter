@@ -104,6 +104,31 @@ agent.py refreshes the blocklist every 30 seconds. Wait 30 seconds after adding 
 
 To verify the blocklist is being fetched, look at the mitmproxy terminal — you should see a log line: `agent: blocklist loaded — vids=X prefixes=Y hosts=Z`
 
+### Dashboard shows a blocked alert (e.g. "blocked_watch") but the site/video still loads in the browser
+
+This is almost always **QUIC/HTTP3 bypassing the proxy**, not a bug in the blocklist logic. Chrome
+and Edge use QUIC (HTTP/3, sent over UDP) for Google properties like `youtube.com` and
+`googlevideo.com` by default. QUIC is its own transport — it does not go through the PAC-configured
+proxy at all, so any request sent over QUIC never reaches `agent.py` and can't be blocked, even
+though the initial page load (which did go through the proxy over normal TCP/TLS) shows up
+correctly as a blocked event.
+
+**Fix:** disable QUIC in the browser via the official enterprise policy. `setup.ps1` does this
+automatically for new installs (Step 11B). For a machine that was set up before this fix existed,
+run this once as Administrator, then fully close and reopen Chrome/Edge (check Task Manager —
+lingering `chrome.exe`/`msedge.exe` processes keep old QUIC connections alive):
+
+```powershell
+New-Item -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Force | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name "QuicAllowed" -Value 0 -Type DWord
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Force | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name "QuicAllowed" -Value 0 -Type DWord
+```
+
+This is a known, industry-wide limitation of any TLS-inspecting proxy (not specific to this tool) —
+every enterprise proxy vendor (Zscaler, Netskope, Fortinet, etc.) requires the same QUIC-disable
+step for the same reason.
+
 ### to-server.py shows "Cannot reach server"
 
 - Server might be down: `sudo systemctl status seceoknight`
