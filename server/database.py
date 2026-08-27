@@ -8,6 +8,7 @@ import sqlite3
 import os
 import time
 import json
+import secrets
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo   # stdlib since Python 3.9 -- no extra dependency
@@ -168,6 +169,24 @@ def init_db():
             key         TEXT PRIMARY KEY,
             value       TEXT,
             updated_at  TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    # ── Per-agent ingest tokens ───────────────────────────────────────────────
+    # Optional, grace-period-based (same philosophy as the shared X-API-Key in
+    # auth.py): a hostname with NO row here is unaffected -- it keeps
+    # authenticating with the shared API key exactly as before. Only once an
+    # admin explicitly issues a token for a specific machine does that
+    # machine's traffic need to carry it, and revoking it (rather than
+    # rotating the one shared key for the whole fleet) takes out just that
+    # machine.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS agent_tokens (
+            hostname    TEXT PRIMARY KEY,
+            token       TEXT NOT NULL,
+            created_at  TEXT DEFAULT (datetime('now')),
+            revoked     INTEGER DEFAULT 0,
+            revoked_at  TEXT
         )
     """)
 
@@ -690,6 +709,77 @@ def get_stale_active_endpoints():
             WHERE status='active' AND last_seen < datetime('now', '-{STALE_THRESHOLD_MINUTES} minutes')
         """).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def issue_agent_token(hostname: str) -> str:
+    """Generate (or regenerate) a per-agent token for `hostname`. Returns the
+    raw token -- this is the only time it's ever readable; callers must show
+    it to the admin immediately and it can't be retrieved again afterwards,
+    only revoked and re-issued."""
+    token = secrets.token_urlsafe(32)
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO agent_tokens (hostname, token, created_at, revoked, revoked_at)
+            VALUES (?, ?, datetime('now'), 0, NULL)
+            ON CONFLICT(hostname) DO UPDATE SET
+                token = excluded.token,
+                created_at = datetime('now'),
+                revoked = 0,
+                revoked_at = NULL
+        """, (hostname, token))
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def revoke_agent_token(hostname: str) -> bool:
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE agent_tokens SET revoked=1, revoked_at=datetime('now') WHERE hostname=?",
+            (hostname,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def list_agent_tokens():
+    """Never returns the raw token -- just enough for an admin to see which
+    machines have one issued and whether it's active or revoked."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT hostname, created_at, revoked, revoked_at
+            FROM agent_tokens ORDER BY created_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def verify_agent_token(hostname: str, supplied_token: str) -> bool:
+    """Grace-period aware, same philosophy as auth.verify_api_key: a hostname
+    that has never been issued a token always passes here (the shared
+    X-API-Key check upstream is still what protects it) -- only a hostname
+    that HAS an issued token must present the matching, non-revoked value."""
+    if not hostname:
+        return True
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT token, revoked FROM agent_tokens WHERE hostname=?", (hostname,)
+        ).fetchone()
+        if row is None:
+            return True
+        if row["revoked"]:
+            return False
+        return supplied_token == row["token"]
     finally:
         conn.close()
 

@@ -29,7 +29,33 @@ HEARTBEAT_ENDPOINT  = f"http://{SERVER_IP}:{SERVER_PORT}/api/heartbeat"
 # Get this value from server/.env on the server (printed at the end of
 # install.sh), and set it here.
 API_KEY       = "c587daf8474f912561f01c3b960fe080f84497271f4e6efe23854ccdefe1f193"
+
+# Per-agent token -- fully optional, layered ON TOP of the shared API_KEY
+# above rather than replacing it. Unlike the one shared API_KEY (same value
+# on every machine -- if it leaks, every machine needs re-keying), this is
+# unique per hostname and individually revocable from the dashboard without
+# touching any other endpoint. Nothing changes for a machine unless an admin
+# explicitly runs `POST /api/agents/token {"hostname": "..."}` on the server
+# and drops the returned value into this file -- if the file doesn't exist,
+# this machine just keeps authenticating with the shared API_KEY exactly as
+# it always has (see database.verify_agent_token's grace-period logic).
+AGENT_TOKEN_FILE = r"C:\SecEoKnight\agent_token.txt"
+
+
+def _load_agent_token():
+    try:
+        with open(AGENT_TOKEN_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
+
+
+AGENT_TOKEN = _load_agent_token()
 REQUEST_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
+if AGENT_TOKEN:
+    REQUEST_HEADERS["X-Agent-Token"] = AGENT_TOKEN
 HEARTBEAT_INTERVAL  = 60      # seconds between heartbeats -- keep in sync with
                                # STALE_THRESHOLD_MINUTES in server/database.py
 POLL_INTERVAL = 1       # seconds between file checks

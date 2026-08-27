@@ -23,7 +23,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Request, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -58,6 +58,23 @@ def _check_ingest_rate_limit(key: str) -> bool:
     count += 1
     _ingest_rate_state[key] = (window_start, count)
     return count <= INGEST_RATE_LIMIT
+
+
+# ── Per-agent ingest tokens ────────────────────────────────────────────────
+# Layered ON TOP of, not instead of, the shared X-API-Key check -- exactly
+# the same grace-period philosophy as auth.py: a machine that has never been
+# individually issued a token is completely unaffected (db.verify_agent_token
+# returns True immediately for it), so rolling this out can't lock out the
+# existing fleet. Only once an admin explicitly issues a per-machine token
+# (via POST /api/agents/token) does that specific hostname's traffic need to
+# carry it -- and revoking it takes out just that machine instead of forcing
+# a shared-key rotation across all ~50 endpoints.
+def _check_agent_token(hostname: str, supplied_token: str):
+    if not db.verify_agent_token(hostname, supplied_token):
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid or revoked agent token for hostname '{hostname}'",
+        )
 
 
 async def _notify_webhook(message: str):
@@ -349,7 +366,9 @@ def get_after_hours_logs(days: int = 7, _auth: bool = Depends(verify_api_key)):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/logs", tags=["Logs"], status_code=202)
-async def receive_log(payload: dict, request: Request, _auth: bool = Depends(verify_api_key)):
+async def receive_log(payload: dict, request: Request,
+                       _auth: bool = Depends(verify_api_key),
+                       x_agent_token: str = Header(default="", alias="X-Agent-Token")):
     """
     Accepts a single log entry (JSON) from to-server.py or the Chrome
     extension. Saves to SQLite, updates endpoint record, and pushes
@@ -361,6 +380,10 @@ async def receive_log(payload: dict, request: Request, _auth: bool = Depends(ver
     _rl_key = payload.get("endpoint_hostname") or (request.client.host if request.client else "unknown")
     if not _check_ingest_rate_limit(_rl_key):
         raise HTTPException(429, f"Rate limit exceeded ({INGEST_RATE_LIMIT}/sec) for {_rl_key}")
+
+    # Per-agent token check -- no-op for any hostname that hasn't been issued
+    # one (see _check_agent_token above).
+    _check_agent_token(payload.get("endpoint_hostname", ""), x_agent_token)
 
     # Normalise event field
     event_type = payload.get("event", payload.get("event_type", "unknown"))
@@ -449,7 +472,8 @@ class HeartbeatIn(BaseModel):
 
 
 @app.post("/api/heartbeat", tags=["Logs"], status_code=202)
-def receive_heartbeat(hb: HeartbeatIn, _auth: bool = Depends(verify_api_key)):
+def receive_heartbeat(hb: HeartbeatIn, _auth: bool = Depends(verify_api_key),
+                       x_agent_token: str = Header(default="", alias="X-Agent-Token")):
     """
     Lightweight periodic ping from to-server.py, sent independently of real
     browsing traffic. Keeps an idle-but-healthy endpoint's last_seen fresh
@@ -459,6 +483,7 @@ def receive_heartbeat(hb: HeartbeatIn, _auth: bool = Depends(verify_api_key)):
     Also carries the endpoint script version so the dashboard can flag
     machines that need a redeploy after an agent-side fix.
     """
+    _check_agent_token(hb.hostname, x_agent_token)
     db.heartbeat_endpoint(hb.ip, hb.hostname, hb.agent_version)
     return {"received": True}
 
@@ -621,6 +646,39 @@ def put_agent_config(body: AgentConfigUpdate, _auth: bool = Depends(verify_api_k
         raise HTTPException(400, f"mode must be one of {sorted(db.VALID_AGENT_MODES)}")
     db.set_agent_mode(body.hostname, body.mode, body.updated_by or "admin")
     return {"message": f"{body.hostname} set to {body.mode}"}
+
+
+# ── Per-agent ingest tokens ──────────────────────────────────────────────────
+# See _check_agent_token above and database.py's agent_tokens table for the
+# grace-period rollout logic. These three routes are the admin-facing side:
+# issue a token for a machine, list what's been issued, revoke one.
+
+class AgentTokenIssue(BaseModel):
+    hostname: str
+
+
+@app.post("/api/agents/token", tags=["Agents"])
+def issue_agent_token(body: AgentTokenIssue, _auth: bool = Depends(verify_api_key)):
+    """Returns the raw token -- this is the ONLY response that ever contains
+    it. Copy it into the target machine's agent token file immediately (see
+    endpoint/agent.py's AGENT_TOKEN_FILE); it can't be retrieved again, only
+    revoked and re-issued."""
+    if not body.hostname.strip():
+        raise HTTPException(400, "hostname is required")
+    token = db.issue_agent_token(body.hostname.strip())
+    return {"hostname": body.hostname.strip(), "token": token}
+
+
+@app.get("/api/agents/tokens", tags=["Agents"])
+def list_agent_tokens_endpoint(_auth: bool = Depends(verify_api_key)):
+    return db.list_agent_tokens()
+
+
+@app.post("/api/agents/token/{hostname}/revoke", tags=["Agents"])
+def revoke_agent_token_endpoint(hostname: str, _auth: bool = Depends(verify_api_key)):
+    if not db.revoke_agent_token(hostname):
+        raise HTTPException(404, f"No token issued for hostname '{hostname}'")
+    return {"message": f"Token for {hostname} revoked"}
 
 
 # ── Agent self-update ──────────────────────────────────────────────────────
