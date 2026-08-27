@@ -11,7 +11,7 @@ Changes from original:
 """
 
 from mitmproxy import http, ctx
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote as _urlquote
 import time
 import os
 import re
@@ -59,6 +59,50 @@ RETRY_BACKOFF    = 1.5
 SUSPICIOUS_CDN_HOSTS = ("googlevideo.com", "ytimg.com")
 MAX_LOG_BYTES = 20 * 1024 * 1024   # rotate (truncate) LOG_PATH before it grows past this
 HANDLE_CACHE_CAP = 500   # bounded LRU-ish cap for the passively-learned @handle -> UC id map
+
+# Injected into youtube.com HTML pages (see _maybe_inject_overlay). YouTube is
+# a single-page app: clicking a blocked video from search results, the
+# homepage, or a related-videos sidebar updates the address bar via
+# history.pushState() WITHOUT sending a fresh request to /watch -- the actual
+# blocking happens on the background youtubei API call instead, which the
+# user never sees a 403 page for (it's not a navigation, it's a fetch()).
+# Without this, a user just sees a broken/half-loaded player with no
+# explanation. This script polls a short-lived cookie that _blocked_response
+# sets on every block (including background API blocks) and shows a real
+# block screen the instant it appears, regardless of how the block happened.
+OVERLAY_SCRIPT = """
+<script>(function(){
+  function getCookie(name){
+    var pairs=document.cookie.split(";");
+    for (var i=0;i<pairs.length;i++){
+      var p=pairs[i].trim();
+      if (p.indexOf(name+"=")===0) return decodeURIComponent(p.substring(name.length+1));
+    }
+    return null;
+  }
+  function clearCookie(name){
+    document.cookie=name+"=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  }
+  function showOverlay(msg){
+    if (document.getElementById("__seb_overlay")) return;
+    var el=document.createElement("div");
+    el.id="__seb_overlay";
+    el.style.cssText="position:fixed;inset:0;z-index:2147483647;background:#0b0f14;color:#fff;"
+      +"display:flex;flex-direction:column;align-items:center;justify-content:center;"
+      +"font-family:-apple-system,Segoe UI,Roboto,sans-serif;text-align:center;padding:24px;";
+    el.innerHTML="<div style='font-size:40px;margin-bottom:12px;'>&#128737;</div>"
+      +"<h1 style='margin:0 0 8px;font-size:22px;'>Blocked by SecEoKnight</h1>"
+      +"<p style='margin:0;opacity:.75;font-size:14px;max-width:480px;'>"+msg+"</p>";
+    (document.documentElement||document.body).appendChild(el);
+  }
+  function poll(){
+    var v=getCookie("__seb_block");
+    if (v){ showOverlay(v); clearCookie("__seb_block"); }
+  }
+  setInterval(poll,200);
+  poll();
+})();</script>
+"""
 # -----------------------------------------------------------------------------
 
 
@@ -311,6 +355,11 @@ class VideoBlockerSafe:
                 f"<p>{reason}</p></body></html>"
             ).encode()
             headers = {"Content-Type": "text/html; charset=utf-8"}
+        # Short-lived JS-readable cookie so the overlay script injected by
+        # _maybe_inject_overlay can detect this block even when it happened
+        # on a background API call the user never directly sees (see the
+        # OVERLAY_SCRIPT comment above for why that matters on YouTube).
+        headers["Set-Cookie"] = f"__seb_block={_urlquote(reason)[:200]}; Path=/; Max-Age=10; SameSite=Lax"
         flow.response = make_response(403, body, headers)
 
     # -- Watch path helper -----------------------------------------------------
@@ -555,6 +604,11 @@ class VideoBlockerSafe:
             )
             return
 
+        try:
+            self._maybe_inject_overlay(flow, parsed)
+        except Exception as e:
+            ctx.log.debug(f"agent: overlay injection failed: {e}")
+
         # Passively learn @handle -> UC channel-id mappings from YouTube's
         # /browse API responses (fired when a channel page loads). This is
         # what lets a `channel:@handle` rule catch blocking via the
@@ -596,6 +650,34 @@ class VideoBlockerSafe:
             with self._lock:
                 self.handle_to_uc[handle] = uc_id
             ctx.log.debug(f"agent: learned channel mapping {handle} -> {uc_id}")
+
+    def _maybe_inject_overlay(self, flow, parsed):
+        """Inject OVERLAY_SCRIPT into youtube.com HTML pages so an in-app
+        block (a background API call the user never sees a 403 for) still
+        shows a real block screen instead of silently failing. Skipped
+        entirely in monitor/disabled mode -- there's nothing to react to
+        since those modes never set the block cookie."""
+        if self.agent_mode != "enforce":
+            return
+        host = (parsed.hostname or "").lower()
+        if not host.endswith("youtube.com"):
+            return
+        resp = flow.response
+        if not resp or not resp.content:
+            return
+        ctype = resp.headers.get("content-type", "")
+        if "text/html" not in ctype:
+            return
+        try:
+            html = resp.text
+        except Exception:
+            return
+        if "__seb_overlay" in html:
+            return   # already injected -- avoid double-injecting on retried flows
+        if "</body>" in html:
+            resp.text = html.replace("</body>", OVERLAY_SCRIPT + "</body>", 1)
+        elif "</html>" in html:
+            resp.text = html.replace("</html>", OVERLAY_SCRIPT + "</html>", 1)
 
 
 addons = [VideoBlockerSafe()]
