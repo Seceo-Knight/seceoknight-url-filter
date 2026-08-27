@@ -119,6 +119,27 @@ def init_db():
         )
     """)
 
+    # ── Alerts ────────────────────────────────────────────────────────────────
+    # alert_type: agent_disconnect / blocklist_fetch_failure / blocklist_edit /
+    # after_hours_browsing. Distinct from `events` -- events are the raw
+    # firehose of every request; alerts are the small set of things an admin
+    # actually needs to notice and act on.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_type   TEXT NOT NULL,
+            severity     TEXT DEFAULT 'medium',   -- low / medium / high
+            message      TEXT NOT NULL,
+            hostname     TEXT,
+            resolved     INTEGER DEFAULT 0,
+            resolved_by  TEXT,
+            resolved_at  TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(resolved)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_created  ON alerts(created_at)")
+
     # ── Endpoints ─────────────────────────────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS endpoints (
@@ -459,6 +480,78 @@ def list_agent_configs():
     conn = get_connection()
     try:
         rows = conn.execute("SELECT hostname, mode, updated_at, updated_by FROM agent_config").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def create_alert(alert_type, message, severity="medium", hostname=None, dedupe_minutes=60):
+    """Insert a new alert, unless an unresolved alert of the same
+    type+hostname was already created within dedupe_minutes -- without this,
+    a machine that's been offline for hours would spawn a fresh alert on
+    every background check instead of one alert that stays open until
+    someone resolves it."""
+    conn = get_connection()
+    try:
+        if dedupe_minutes:
+            existing = conn.execute("""
+                SELECT id FROM alerts
+                WHERE alert_type=? AND (hostname=? OR (hostname IS NULL AND ? IS NULL))
+                      AND resolved=0
+                      AND created_at >= datetime('now', ?)
+                LIMIT 1
+            """, (alert_type, hostname, hostname, f"-{dedupe_minutes} minutes")).fetchone()
+            if existing:
+                return None
+        cur = conn.execute("""
+            INSERT INTO alerts (alert_type, severity, message, hostname)
+            VALUES (?, ?, ?, ?)
+        """, (alert_type, severity, message, hostname))
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_alerts(resolved=None, limit=200):
+    conn = get_connection()
+    try:
+        query = "SELECT * FROM alerts"
+        params = ()
+        if resolved is not None:
+            query += " WHERE resolved=?"
+            params = (1 if resolved else 0,)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params = params + (limit,)
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def resolve_alert(alert_id, resolved_by="admin"):
+    conn = get_connection()
+    try:
+        cur = conn.execute("""
+            UPDATE alerts SET resolved=1, resolved_by=?, resolved_at=datetime('now')
+            WHERE id=?
+        """, (resolved_by, alert_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_stale_active_endpoints():
+    """Endpoints currently marked 'active' whose last_seen is already past
+    the staleness window -- i.e. ones that just went offline. Used by the
+    background disconnect-alert check."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            SELECT ip, hostname, last_seen FROM endpoints
+            WHERE status='active' AND last_seen < datetime('now', '-{STALE_THRESHOLD_MINUTES} minutes')
+        """).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

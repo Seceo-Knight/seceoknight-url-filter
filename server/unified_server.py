@@ -19,6 +19,7 @@ import time
 import sqlite3
 import os
 import hashlib
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
@@ -33,14 +34,39 @@ from websocket_manager import ws_manager
 from auth import verify_api_key, check_ws_api_key
 
 
+# ── Background: agent-disconnect alerts ───────────────────────────────────────
+# Runs independently of anyone having the dashboard open -- a machine going
+# offline at 2am should have an alert waiting when someone checks in the
+# morning, not just a "last seen" timestamp nobody happened to notice.
+async def _disconnect_watcher():
+    while True:
+        try:
+            for ep in db.get_stale_active_endpoints():
+                name = ep.get("hostname") or ep.get("ip")
+                alert_id = db.create_alert(
+                    "agent_disconnect",
+                    f"{name} hasn't checked in since {ep.get('last_seen')} (was active)",
+                    severity="high",
+                    hostname=ep.get("hostname"),
+                )
+                if alert_id:
+                    await ws_manager.broadcast({"type": "alert", "alert_type": "agent_disconnect",
+                                                 "hostname": ep.get("hostname"), "id": alert_id})
+        except Exception as e:
+            print(f"[SERVER] disconnect watcher error: {e}")
+        await asyncio.sleep(60)
+
+
 # ── Lifespan (startup / shutdown) ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[SERVER] Starting SecEoKnight Unified Server...")
     db.init_db()
     ai.load_models()
+    watcher_task = asyncio.create_task(_disconnect_watcher())
     print("[SERVER] Ready ✓")
     yield
+    watcher_task.cancel()
     print("[SERVER] Shutting down.")
 
 
@@ -113,8 +139,19 @@ def list_blocklist(active_only: bool = True, _auth: bool = Depends(verify_api_ke
         conn.close()
 
 
+async def _alert_blocklist_edit(action: str, rule_type: str, rule_value: str, added_by: str = "admin"):
+    """Every blocklist mutation gets a low-noise alert (dedup'd per type, not
+    per rule, so a burst of edits doesn't flood the Alerts page) plus a
+    live push so it shows up without a manual refresh."""
+    msg = f"{added_by} {action} {rule_type} rule: {rule_value}"
+    alert_id = db.create_alert("blocklist_edit", msg, severity="low", dedupe_minutes=2)
+    if alert_id:
+        await ws_manager.broadcast({"type": "alert", "alert_type": "blocklist_edit",
+                                     "message": msg, "id": alert_id})
+
+
 @app.post("/api/blocklist", tags=["Blocklist"], status_code=201)
-def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key)):
+async def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key)):
     valid_types = {"host", "prefix", "regex", "vid", "channel"}
     if rule.rule_type not in valid_types:
         raise HTTPException(400, f"rule_type must be one of {valid_types}")
@@ -136,13 +173,14 @@ def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key
         conn.commit()
         db.record_blocklist_history("add", rule.rule_type, rule.rule_value.strip(),
                                      rule.description, rule.added_by)
+        await _alert_blocklist_edit("added", rule.rule_type, rule.rule_value.strip(), rule.added_by)
         return {"message": "Rule added", "rule": rule.model_dump()}
     finally:
         conn.close()
 
 
 @app.delete("/api/blocklist/{rule_id}", tags=["Blocklist"])
-def delete_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
+async def delete_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         row = conn.execute("SELECT rule_type, rule_value FROM blocklist WHERE id=?", (rule_id,)).fetchone()
@@ -154,13 +192,14 @@ def delete_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
             raise HTTPException(404, "Rule not found")
         if row:
             db.record_blocklist_history("remove", row["rule_type"], row["rule_value"])
+            await _alert_blocklist_edit("removed", row["rule_type"], row["rule_value"])
         return {"message": f"Rule {rule_id} deactivated"}
     finally:
         conn.close()
 
 
 @app.put("/api/blocklist/{rule_id}/restore", tags=["Blocklist"])
-def restore_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
+async def restore_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         row = conn.execute("SELECT rule_type, rule_value FROM blocklist WHERE id=?", (rule_id,)).fetchone()
@@ -172,6 +211,7 @@ def restore_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
             raise HTTPException(404, "Rule not found")
         if row:
             db.record_blocklist_history("restore", row["rule_type"], row["rule_value"])
+            await _alert_blocklist_edit("restored", row["rule_type"], row["rule_value"])
         return {"message": f"Rule {rule_id} restored"}
     finally:
         conn.close()
@@ -202,14 +242,33 @@ def get_blocklist_history_snapshot(history_id: int, _auth: bool = Depends(verify
 
 
 @app.post("/api/blocklist-history/{history_id}/revert", tags=["Blocklist"])
-def revert_blocklist_history(history_id: int, body: RevertRequest = RevertRequest(),
-                              _auth: bool = Depends(verify_api_key)):
+async def revert_blocklist_history(history_id: int, body: RevertRequest = RevertRequest(),
+                                    _auth: bool = Depends(verify_api_key)):
     """Reconcile the live blocklist to exactly match a past snapshot. Nothing
     is deleted from history -- the revert itself is logged as a new entry."""
     result = db.revert_blocklist_to(history_id, added_by=body.added_by or "admin")
     if result is None:
         raise HTTPException(404, "History entry not found")
+    await _alert_blocklist_edit("reverted to", "snapshot", f"#{history_id}", body.added_by or "admin")
     return {"message": f"Reverted to snapshot #{history_id}", **result}
+
+
+# ── Alerts ──────────────────────────────────────────────────────────────────
+# agent_disconnect (background watcher above) / blocklist_fetch_failure
+# (reported by agent.py via the normal /logs pipeline) / blocklist_edit
+# (above) / after_hours_browsing (see office-hours section).
+
+@app.get("/api/alerts", tags=["Alerts"])
+def get_alerts(resolved: Optional[bool] = None, limit: int = 200, _auth: bool = Depends(verify_api_key)):
+    return db.list_alerts(resolved=resolved, limit=limit)
+
+
+@app.put("/api/alerts/{alert_id}/resolve", tags=["Alerts"])
+def put_resolve_alert(alert_id: int, resolved_by: str = "admin", _auth: bool = Depends(verify_api_key)):
+    ok = db.resolve_alert(alert_id, resolved_by=resolved_by)
+    if not ok:
+        raise HTTPException(404, "Alert not found")
+    return {"message": f"Alert {alert_id} resolved"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -275,6 +334,21 @@ async def receive_log(payload: dict, request: Request, _auth: bool = Depends(ver
             "timestamp":  payload.get("timestamp_iso", ""),
             "threat_level": payload.get("threat_level", "High"),
         })
+
+    # agent.py emits this via the normal log pipeline (not a separate
+    # channel) when it exhausts its retries fetching the blocklist -- an
+    # agent that can't fetch fresh rules is quietly running stale ones,
+    # which is worth an admin's attention.
+    if event_type == "blocklist_fetch_failed":
+        hostname = payload.get("endpoint_hostname", "")
+        alert_id = db.create_alert(
+            "blocklist_fetch_failure",
+            f"{hostname or reported_ip} failed to fetch the blocklist: {payload.get('note', 'unknown error')}",
+            severity="high", hostname=hostname, dedupe_minutes=30,
+        )
+        if alert_id:
+            await ws_manager.broadcast({"type": "alert", "alert_type": "blocklist_fetch_failure",
+                                         "hostname": hostname, "id": alert_id})
 
     return {"received": True}
 

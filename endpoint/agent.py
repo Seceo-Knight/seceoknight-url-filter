@@ -310,6 +310,19 @@ class VideoBlockerSafe:
                 time.sleep(RETRY_BACKOFF ** attempt)
 
         ctx.log.warn("agent: blocklist fetch exhausted -- keeping previous rules")
+        # Surface this to the dashboard through the normal log pipeline
+        # (to-server.py tails LOG_PATH and ships it same as any other event)
+        # rather than a separate channel -- an agent silently running a
+        # stale blocklist is worth an admin noticing.
+        self._write_log({
+            "timestamp":       time.time(),
+            "timestamp_iso":   time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+            "event":           "blocklist_fetch_failed",
+            "endpoint_ip":     ENDPOINT_IP,
+            "endpoint_hostname": ENDPOINT_HOSTNAME,
+            "blocked":         False,
+            "note":            f"exhausted {MAX_RETRIES} retries fetching {BLOCKLIST_URL}",
+        })
 
     # -- Logging ---------------------------------------------------------------
 
