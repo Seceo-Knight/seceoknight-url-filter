@@ -392,7 +392,11 @@ def get_office_hours_setting(_auth: bool = Depends(verify_api_key)):
 @app.put("/api/settings/office-hours", tags=["Settings"])
 def put_office_hours_setting(config: OfficeHoursConfig, _auth: bool = Depends(verify_api_key)):
     db.set_office_hours(config.model_dump())
-    return {"message": "Office hours saved"}
+    # Echo back the full saved config, not just a message -- the dashboard
+    # uses this response to refresh its own form state after a save, and a
+    # message-only response was overwriting that state with garbage,
+    # breaking every save after the first.
+    return db.get_office_hours()
 
 
 @app.get("/api/logs/after-hours", tags=["Logs"])
