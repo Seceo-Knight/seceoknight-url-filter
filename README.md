@@ -270,6 +270,76 @@ behaves exactly as before (local model + manual whitelist only).
 
 ---
 
+### Sending Alerts to Slack / Microsoft Teams / Discord (Optional)
+
+**What this does:** when something worth knowing about happens — a machine goes offline,
+someone edits the blocklist, a machine can't fetch the blocklist, or someone browses a
+blocked site after hours — the server can automatically post a message into a chat channel,
+instead of everyone having to keep the dashboard open to notice.
+
+This is entirely optional. Skip it and everything works exactly the same — alerts still
+show up in the dashboard's Alerts tab either way. This just adds a copy of the same
+notification into a chat channel.
+
+You only need **one** of the three below, whichever your team actually uses. The setup is
+the same shape for all three: get a special URL from the chat app, then paste it into the
+server's config file.
+
+**Slack:**
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and sign in with your Slack account
+2. Click **Create New App** → **From scratch** → give it a name (e.g. "SecEoKnight Alerts")
+   and pick your workspace
+3. In the left sidebar, click **Incoming Webhooks** → toggle it **On**
+4. Click **Add New Webhook to Workspace** → choose the channel that should receive alerts
+   → **Allow**
+5. Copy the webhook URL shown (starts with `https://hooks.slack.com/services/...`)
+
+**Microsoft Teams:**
+> Microsoft retired the old "Connectors" webhook method — if any guide you find online
+> talks about **Connectors**, skip it. Use the **Workflows** app instead, which is the
+> current supported way as of 2026.
+1. In Microsoft Teams, go to the channel that should receive alerts
+2. Click **More options (⋯)** next to the channel name → **Workflows**
+3. Search for the template called **Send webhook alerts to a channel** and select it
+4. Follow the prompts (you may be asked to sign in) → **Save**
+5. Once created, copy the webhook URL it shows you
+
+**Discord:**
+1. In Discord, go to the channel that should receive alerts
+2. Click the **⚙ gear icon** next to the channel name (Edit Channel) → **Integrations**
+3. Click **Webhooks** → **New Webhook**
+4. Give it a name if you like → click **Copy Webhook URL**
+
+**Now configure the server** (same step regardless of which one you picked):
+```bash
+nano /opt/seceoknight/seceoknight-url-filter/server/.env
+```
+Add this line, using whichever URL you copied above:
+```
+SECEOKNIGHT_WEBHOOK_URL=paste-your-webhook-url-here
+```
+Save (`Ctrl+O`, `Enter`, `Ctrl+X`), then:
+```bash
+sudo systemctl restart seceoknight
+```
+
+**Test it worked:** trigger any of the alert conditions — the easiest is adding then
+removing a blocklist rule:
+```bash
+curl -X POST http://localhost:5001/api/blocklist \
+  -H "Content-Type: application/json" \
+  -d '{"rule_type": "host", "rule_value": "webhook-test-example.com", "comment": "testing webhook"}'
+```
+You should see a message appear in your chat channel within a few seconds. If nothing
+shows up, double-check the URL was pasted correctly (no extra spaces or quotes) and that
+the server actually restarted.
+
+There's no field for this in the dashboard itself — it's a server-level setting (one
+webhook URL for the whole deployment), not something each dashboard user configures
+individually, so it lives in `server/.env` alongside the other server secrets.
+
+---
+
 ## Step 5 — Managing the Blocklist (Add / Remove / Update Rules)
 
 Run all commands on the Ubuntu server. Endpoints pick up changes within 30 seconds automatically.

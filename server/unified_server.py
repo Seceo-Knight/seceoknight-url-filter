@@ -104,7 +104,12 @@ async def _notify_webhook(message: str):
     def _post():
         try:
             import requests as _rq
-            _rq.post(WEBHOOK_URL, json={"text": message}, timeout=5)
+            # Slack and Microsoft Teams (via the Workflows app's webhook
+            # trigger) both read the "text" field. Discord ignores "text"
+            # entirely and requires "content" instead -- sending both keys
+            # in the same payload works on all three without needing to
+            # know or configure which platform WEBHOOK_URL points at.
+            _rq.post(WEBHOOK_URL, json={"text": message, "content": message}, timeout=5)
         except Exception as e:
             print(f"[SERVER] webhook post failed: {e}")
     try:
