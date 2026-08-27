@@ -40,7 +40,8 @@ ENDPOINT_HOSTNAME = socket.gethostname()
 # -- Configuration -------------------------------------------------------------
 SERVER_IP    = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT  = 5001
-BLOCKLIST_URL = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
+BLOCKLIST_URL     = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
+AGENT_CONFIG_URL  = f"http://{SERVER_IP}:{SERVER_PORT}/api/agents/config"
 
 # API key -- optional while the server is in its auth "grace period"
 # (SECEOKNIGHT_REQUIRE_API_KEY=false), required once it's flipped to true.
@@ -83,10 +84,45 @@ class VideoBlockerSafe:
         self._lock           = threading.Lock()
         self._last_load_time = 0
 
+        # enforce (default, block+log) / monitor (log-only, don't actually
+        # block) / disabled (pure passthrough, don't even log as blocked).
+        # Set per-machine from the dashboard; polled every RELOAD_INTERVAL
+        # alongside the blocklist so a change takes effect within ~30s.
+        self.agent_mode              = "enforce"
+        self._last_config_load_time  = 0
+
         try:
             self._load_blocklist(force=True)
         except Exception:
             ctx.log.warn("agent: initial blocklist load failed -- continuing")
+        try:
+            self._load_agent_config(force=True)
+        except Exception:
+            ctx.log.warn("agent: initial agent-config load failed -- defaulting to enforce")
+
+    # -- Per-agent mode (enforce / monitor / disabled) --------------------------
+
+    def _load_agent_config(self, force=False):
+        now = time.time()
+        if not force and (now - self._last_config_load_time) < RELOAD_INTERVAL:
+            return
+        self._last_config_load_time = now
+        try:
+            req_headers = {"User-Agent": "SecEoKnight-Agent/1.0"}
+            if API_KEY:
+                req_headers["X-API-Key"] = API_KEY
+            url = f"{AGENT_CONFIG_URL}?hostname={ENDPOINT_HOSTNAME}"
+            req = urllib.request.Request(url, headers=req_headers)
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            mode = data.get("mode", "enforce")
+            if mode not in ("enforce", "monitor", "disabled"):
+                mode = "enforce"
+            with self._lock:
+                self.agent_mode = mode
+        except Exception as e:
+            ctx.log.debug(f"agent: config fetch failed, keeping mode={self.agent_mode}: {e}")
 
     # -- Blocklist loader ------------------------------------------------------
 
@@ -248,6 +284,13 @@ class VideoBlockerSafe:
     # -- Block response --------------------------------------------------------
 
     def _blocked_response(self, flow, reason="blocked"):
+        # monitor mode: every call site above this already incremented the
+        # blocked_* counter and emitted a blocked=True log entry -- that's
+        # exactly the "log it as if it were blocked" behavior monitor mode
+        # wants. The only thing monitor mode changes is this: don't actually
+        # set flow.response, so the real request still goes through.
+        if self.agent_mode == "monitor":
+            return
         accept = flow.request.headers.get("accept", "")
         if "application/json" in accept:
             body    = json.dumps({"error": "blocked", "reason": reason}).encode()
@@ -268,7 +311,17 @@ class VideoBlockerSafe:
     # -- Main request handler --------------------------------------------------
 
     def request(self, flow: http.HTTPFlow):
-        self._load_blocklist()   # no-op if cache is fresh
+        self._load_blocklist()      # no-op if cache is fresh
+        self._load_agent_config()   # no-op if cache is fresh
+
+        # disabled mode: pure passthrough -- don't block, don't even log as
+        # blocked (agent still counts it as "allowed" so traffic totals stay
+        # sane). Checked before parsing the URL since there's nothing else to
+        # do in this mode.
+        if self.agent_mode == "disabled":
+            with self._lock:
+                self.counters["allowed"] += 1
+            return
 
         req    = flow.request
         if not req:

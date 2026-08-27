@@ -133,6 +133,8 @@ def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key
         """, (rule.rule_type, rule.rule_value.strip(),
               rule.description, rule.added_by))
         conn.commit()
+        db.record_blocklist_history("add", rule.rule_type, rule.rule_value.strip(),
+                                     rule.description, rule.added_by)
         return {"message": "Rule added", "rule": rule.model_dump()}
     finally:
         conn.close()
@@ -142,12 +144,15 @@ def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key
 def delete_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
+        row = conn.execute("SELECT rule_type, rule_value FROM blocklist WHERE id=?", (rule_id,)).fetchone()
         cur = conn.execute(
             "UPDATE blocklist SET is_active=0 WHERE id=?", (rule_id,)
         )
         conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(404, "Rule not found")
+        if row:
+            db.record_blocklist_history("remove", row["rule_type"], row["rule_value"])
         return {"message": f"Rule {rule_id} deactivated"}
     finally:
         conn.close()
@@ -157,15 +162,53 @@ def delete_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
 def restore_blocklist_rule(rule_id: int, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
+        row = conn.execute("SELECT rule_type, rule_value FROM blocklist WHERE id=?", (rule_id,)).fetchone()
         cur = conn.execute(
             "UPDATE blocklist SET is_active=1 WHERE id=?", (rule_id,)
         )
         conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(404, "Rule not found")
+        if row:
+            db.record_blocklist_history("restore", row["rule_type"], row["rule_value"])
         return {"message": f"Rule {rule_id} restored"}
     finally:
         conn.close()
+
+
+# ── Blocklist history (versioning / diff / revert) ────────────────────────────
+# One entry per add/remove/restore/revert, newest first. Every change to the
+# blocklist -- via any of the endpoints above -- is captured automatically,
+# so this needs no extra wiring beyond what's already in place.
+
+class RevertRequest(BaseModel):
+    added_by: Optional[str] = "admin"
+
+
+@app.get("/api/blocklist-history", tags=["Blocklist"])
+def get_blocklist_history(limit: int = 200, _auth: bool = Depends(verify_api_key)):
+    return db.list_blocklist_history(limit=limit)
+
+
+@app.get("/api/blocklist-history/{history_id}/snapshot", tags=["Blocklist"])
+def get_blocklist_history_snapshot(history_id: int, _auth: bool = Depends(verify_api_key)):
+    """Full rule text for one history entry -- used to render a line-by-line
+    diff against another entry on the frontend."""
+    snap = db.get_blocklist_history_snapshot(history_id)
+    if not snap:
+        raise HTTPException(404, "History entry not found")
+    return snap
+
+
+@app.post("/api/blocklist-history/{history_id}/revert", tags=["Blocklist"])
+def revert_blocklist_history(history_id: int, body: RevertRequest = RevertRequest(),
+                              _auth: bool = Depends(verify_api_key)):
+    """Reconcile the live blocklist to exactly match a past snapshot. Nothing
+    is deleted from history -- the revert itself is logged as a new entry."""
+    result = db.revert_blocklist_to(history_id, added_by=body.added_by or "admin")
+    if result is None:
+        raise HTTPException(404, "History entry not found")
+    return {"message": f"Reverted to snapshot #{history_id}", **result}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -337,10 +380,12 @@ def get_endpoints(_auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         rows = conn.execute(f"""
-            SELECT id, ip, hostname, last_seen, total_requests, total_blocked,
-                   agent_version, {_ENDPOINT_STATUS_CASE}
-            FROM endpoints
-            ORDER BY last_seen DESC
+            SELECT e.id, e.ip, e.hostname, e.last_seen, e.total_requests, e.total_blocked,
+                   e.agent_version, {_ENDPOINT_STATUS_CASE},
+                   COALESCE(ac.mode, 'enforce') AS mode
+            FROM endpoints e
+            LEFT JOIN agent_config ac ON ac.hostname = e.hostname
+            ORDER BY e.last_seen DESC
         """).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -352,9 +397,12 @@ def get_endpoint_detail(ip: str, _auth: bool = Depends(verify_api_key)):
     conn = db.get_connection()
     try:
         ep = conn.execute(f"""
-            SELECT id, ip, hostname, last_seen, total_requests, total_blocked,
-                   agent_version, {_ENDPOINT_STATUS_CASE}
-            FROM endpoints WHERE ip=?
+            SELECT e.id, e.ip, e.hostname, e.last_seen, e.total_requests, e.total_blocked,
+                   e.agent_version, {_ENDPOINT_STATUS_CASE},
+                   COALESCE(ac.mode, 'enforce') AS mode
+            FROM endpoints e
+            LEFT JOIN agent_config ac ON ac.hostname = e.hostname
+            WHERE e.ip=?
         """, (ip,)).fetchone()
         if not ep:
             raise HTTPException(404, "Endpoint not found")
@@ -375,6 +423,40 @@ def get_endpoint_detail(ip: str, _auth: bool = Depends(verify_api_key)):
         }
     finally:
         conn.close()
+
+
+# ── Per-agent blocking mode ────────────────────────────────────────────────
+# enforce (default) / monitor (log-only) / disabled (pure passthrough).
+# agent.py polls its own mode every RELOAD_INTERVAL alongside the blocklist
+# (see agent.py's _load_blocklist) so a mode change takes effect within ~30s
+# with no restart. Keyed by hostname, not IP -- see the schema comment in
+# database.py for why.
+
+class AgentConfigUpdate(BaseModel):
+    hostname:   str
+    mode:       str            # enforce | monitor | disabled
+    updated_by: Optional[str] = "admin"
+
+
+@app.get("/api/agents/config", tags=["Agents"])
+def get_agent_config(hostname: str, _auth: bool = Depends(verify_api_key)):
+    """Polled by agent.py itself -- returns just this one agent's mode."""
+    return {"hostname": hostname, "mode": db.get_agent_mode(hostname)}
+
+
+@app.get("/api/agents/config/all", tags=["Agents"])
+def get_all_agent_configs(_auth: bool = Depends(verify_api_key)):
+    """Used by the dashboard fleet view -- every hostname that has an
+    explicit (non-default) mode set."""
+    return db.list_agent_configs()
+
+
+@app.put("/api/agents/config", tags=["Agents"])
+def put_agent_config(body: AgentConfigUpdate, _auth: bool = Depends(verify_api_key)):
+    if body.mode not in db.VALID_AGENT_MODES:
+        raise HTTPException(400, f"mode must be one of {sorted(db.VALID_AGENT_MODES)}")
+    db.set_agent_mode(body.hostname, body.mode, body.updated_by or "admin")
+    return {"message": f"{body.hostname} set to {body.mode}"}
 
 
 @app.get("/api/my-stats", tags=["Dashboard"])

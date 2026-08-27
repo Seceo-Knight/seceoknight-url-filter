@@ -84,6 +84,41 @@ def init_db():
     """)
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_blocklist_rule ON blocklist(rule_type, rule_value)")
 
+    # ── Blocklist history ────────────────────────────────────────────────────
+    # One row per mutation (add / remove / restore / revert). snapshot_text is
+    # the FULL resulting blocklist (same format get_blocklist_text() returns)
+    # captured right after the change -- that's what makes "revert to here"
+    # possible without needing to replay every action from the beginning.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS blocklist_history (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            action         TEXT NOT NULL,   -- add / remove / restore / revert
+            rule_type      TEXT,
+            rule_value     TEXT,
+            description    TEXT,
+            added_by       TEXT DEFAULT 'admin',
+            snapshot_text  TEXT NOT NULL,
+            created_at     TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_blocklist_history_created ON blocklist_history(created_at)")
+
+    # ── Per-agent blocking mode ──────────────────────────────────────────────
+    # Keyed by hostname (not IP) -- agent.py always knows its own hostname via
+    # socket.gethostname(), whereas the IP the *server* sees an agent under
+    # can shift with DHCP and isn't something agent.py can look up about
+    # itself. 'enforce' (default, block+log) / 'monitor' (log-only, don't
+    # actually block -- useful for staged rollouts) / 'disabled' (pure
+    # passthrough, don't even log as blocked).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS agent_config (
+            hostname    TEXT PRIMARY KEY,
+            mode        TEXT NOT NULL DEFAULT 'enforce',
+            updated_at  TEXT DEFAULT (datetime('now')),
+            updated_by  TEXT DEFAULT 'admin'
+        )
+    """)
+
     # ── Endpoints ─────────────────────────────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS endpoints (
@@ -256,6 +291,171 @@ def get_blocklist_text():
             elif rtype in ("host", "prefix"):
                 lines.append(rval)
         return "\n".join(lines)
+    finally:
+        conn.close()
+
+
+def _parse_blocklist_text(text):
+    """Inverse of get_blocklist_text() -- turn plain-text blocklist lines back
+    into (rule_type, rule_value) pairs, using the exact same rules agent.py's
+    own parser uses (vid: / re: / contains "/" -> prefix / else -> host)."""
+    pairs = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("vid:"):
+            pairs.append(("vid", line.split(":", 1)[1].strip()))
+        elif line.startswith("re:"):
+            pairs.append(("regex", line.split(":", 1)[1].strip()))
+        elif "/" in line:
+            pairs.append(("prefix", line))
+        else:
+            pairs.append(("host", line))
+    return pairs
+
+
+def record_blocklist_history(action, rule_type=None, rule_value=None,
+                              description=None, added_by="admin"):
+    """Snapshot the *current* (post-change) blocklist into history. Call this
+    right after committing an add/remove/restore/revert so snapshot_text
+    reflects the new state."""
+    conn = get_connection()
+    try:
+        snapshot = get_blocklist_text()
+        conn.execute("""
+            INSERT INTO blocklist_history (action, rule_type, rule_value, description, added_by, snapshot_text)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (action, rule_type, rule_value, description, added_by, snapshot))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_blocklist_history(limit=200):
+    """Return recent history entries, newest first, with a lightweight
+    added/removed line-count vs. the immediately preceding snapshot so the
+    UI can show a "+2 / -1" style summary without fetching every snapshot."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT id, action, rule_type, rule_value, description, added_by, snapshot_text, created_at
+            FROM blocklist_history ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+        rows = [dict(r) for r in rows]
+        for i, row in enumerate(rows):
+            # rows are newest-first, so the "previous" snapshot in time is the NEXT item in this list
+            prev_snapshot = rows[i + 1]["snapshot_text"] if i + 1 < len(rows) else ""
+            cur_lines  = set(l for l in row["snapshot_text"].splitlines() if l.strip())
+            prev_lines = set(l for l in prev_snapshot.splitlines() if l.strip())
+            row["added_count"]   = len(cur_lines - prev_lines)
+            row["removed_count"] = len(prev_lines - cur_lines)
+            row["rule_count"]    = len(cur_lines)
+            del row["snapshot_text"]   # keep the list payload light; fetched separately for diff/revert
+        return rows
+    finally:
+        conn.close()
+
+
+def get_blocklist_history_snapshot(history_id):
+    """Full snapshot_text for a single history row -- used for the diff view
+    and as the source of truth for revert."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, snapshot_text, created_at FROM blocklist_history WHERE id=?",
+            (history_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def revert_blocklist_to(history_id, added_by="admin"):
+    """Reconcile the live `blocklist` table so its active rules exactly match
+    a past snapshot, then log the revert itself as a new history entry (the
+    audit trail is append-only -- nothing is ever deleted from history)."""
+    conn = get_connection()
+    try:
+        target_row = conn.execute(
+            "SELECT snapshot_text FROM blocklist_history WHERE id=?", (history_id,)
+        ).fetchone()
+        if not target_row:
+            return None
+        target_pairs = set(_parse_blocklist_text(target_row["snapshot_text"]))
+
+        active_rows = conn.execute(
+            "SELECT rule_type, rule_value FROM blocklist WHERE is_active=1"
+        ).fetchall()
+        active_pairs = set((r["rule_type"], r["rule_value"]) for r in active_rows)
+
+        to_deactivate = active_pairs - target_pairs
+        to_activate   = target_pairs - active_pairs
+
+        for rtype, rval in to_deactivate:
+            conn.execute(
+                "UPDATE blocklist SET is_active=0 WHERE rule_type=? AND rule_value=?",
+                (rtype, rval)
+            )
+        for rtype, rval in to_activate:
+            conn.execute("""
+                INSERT INTO blocklist (rule_type, rule_value, description, added_by, is_active)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(rule_type, rule_value) DO UPDATE SET
+                    is_active = 1, added_by = excluded.added_by
+            """, (rtype, rval, f"restored from history #{history_id}", added_by))
+        conn.commit()
+    finally:
+        conn.close()
+
+    record_blocklist_history(
+        action="revert",
+        description=f"Reverted to snapshot #{history_id}",
+        added_by=added_by,
+    )
+    return {"deactivated": len(to_deactivate), "activated": len(to_activate)}
+
+
+VALID_AGENT_MODES = {"enforce", "monitor", "disabled"}
+
+
+def get_agent_mode(hostname: str) -> str:
+    """A hostname with no row yet is implicitly 'enforce' -- the default and
+    the only mode that existed before this feature, so upgrading the server
+    never silently changes existing agents' behavior."""
+    if not hostname:
+        return "enforce"
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT mode FROM agent_config WHERE hostname=?", (hostname,)
+        ).fetchone()
+        return row["mode"] if row else "enforce"
+    finally:
+        conn.close()
+
+
+def set_agent_mode(hostname: str, mode: str, updated_by: str = "admin"):
+    if mode not in VALID_AGENT_MODES:
+        raise ValueError(f"mode must be one of {VALID_AGENT_MODES}")
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO agent_config (hostname, mode, updated_by, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(hostname) DO UPDATE SET
+                mode = excluded.mode, updated_by = excluded.updated_by, updated_at = datetime('now')
+        """, (hostname, mode, updated_by))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_agent_configs():
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT hostname, mode, updated_at, updated_by FROM agent_config").fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

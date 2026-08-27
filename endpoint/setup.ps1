@@ -461,6 +461,26 @@ foreach ($p in $QuicPolicyPaths) {
 }
 Write-Ok "QUIC disabled for Chrome + Edge (policy takes effect on next browser restart)"
 
+# Belt-and-suspenders: also block QUIC at the firewall (outbound UDP 443).
+# The browser policy above is enough for Chrome/Edge specifically, but a
+# firewall rule keeps working even if that policy gets removed, overridden by
+# another GPO, or if some other app on the machine tries QUIC -- and it's the
+# same approach every mainstream TLS-inspecting proxy vendor uses for this
+# exact bypass.
+$QuicFwRuleName = "SecEoKnight - Block QUIC (UDP 443 Outbound)"
+if (-not (Get-NetFirewallRule -DisplayName $QuicFwRuleName -ErrorAction SilentlyContinue)) {
+    try {
+        New-NetFirewallRule -DisplayName $QuicFwRuleName `
+            -Direction Outbound -Protocol UDP -RemotePort 443 -Action Block `
+            -Profile Any | Out-Null
+        Write-Ok "Firewall rule created: outbound UDP 443 blocked"
+    } catch {
+        Write-Warn "Could not create QUIC firewall rule: $_"
+    }
+} else {
+    Write-Ok "Firewall rule already present: outbound UDP 443 blocked"
+}
+
 # =============================================================================
 # STEP 12 -- Start services
 # =============================================================================
