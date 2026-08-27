@@ -34,6 +34,58 @@ from websocket_manager import ws_manager
 from auth import verify_api_key, check_ws_api_key
 
 
+# ── Alerts: shared fire-and-notify helper ─────────────────────────────────────
+# Every alert-creation call site (disconnect watcher, blocklist edits, fetch
+# failures, after-hours) goes through this so each one gets a WebSocket push
+# AND an optional Slack/Teams/Discord webhook, without duplicating that
+# wiring four times.
+WEBHOOK_URL = os.environ.get("SECEOKNIGHT_WEBHOOK_URL", "").strip()
+
+# ── Ingest rate limiting ───────────────────────────────────────────────────
+# Bounds how fast any single agent can insert log rows -- a runaway/misbehaving
+# endpoint (or a compromised one trying to flood the DB) can't take down the
+# server for everyone else. Per-source, sliding 1-second window, in-memory
+# (resets on restart -- fine, this only needs to survive a few seconds).
+INGEST_RATE_LIMIT = int(os.environ.get("SECEOKNIGHT_INGEST_RATE_LIMIT", "200"))
+_ingest_rate_state: dict = {}
+
+
+def _check_ingest_rate_limit(key: str) -> bool:
+    now = time.time()
+    window_start, count = _ingest_rate_state.get(key, (now, 0))
+    if now - window_start >= 1.0:
+        window_start, count = now, 0
+    count += 1
+    _ingest_rate_state[key] = (window_start, count)
+    return count <= INGEST_RATE_LIMIT
+
+
+async def _notify_webhook(message: str):
+    if not WEBHOOK_URL:
+        return
+    def _post():
+        try:
+            import requests as _rq
+            _rq.post(WEBHOOK_URL, json={"text": message}, timeout=5)
+        except Exception as e:
+            print(f"[SERVER] webhook post failed: {e}")
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _post)
+    except Exception as e:
+        print(f"[SERVER] webhook dispatch failed: {e}")
+
+
+async def _fire_alert(alert_type, message, severity="medium", hostname=None, dedupe_minutes=60):
+    alert_id = db.create_alert(alert_type, message, severity=severity,
+                                hostname=hostname, dedupe_minutes=dedupe_minutes)
+    if alert_id:
+        await ws_manager.broadcast({"type": "alert", "alert_type": alert_type,
+                                     "hostname": hostname, "id": alert_id, "message": message})
+        await _notify_webhook(f"[SecEoKnight] {alert_type.replace('_', ' ')}: {message}")
+    return alert_id
+
+
 # ── Background: agent-disconnect alerts ───────────────────────────────────────
 # Runs independently of anyone having the dashboard open -- a machine going
 # offline at 2am should have an alert waiting when someone checks in the
@@ -43,15 +95,11 @@ async def _disconnect_watcher():
         try:
             for ep in db.get_stale_active_endpoints():
                 name = ep.get("hostname") or ep.get("ip")
-                alert_id = db.create_alert(
+                await _fire_alert(
                     "agent_disconnect",
                     f"{name} hasn't checked in since {ep.get('last_seen')} (was active)",
-                    severity="high",
-                    hostname=ep.get("hostname"),
+                    severity="high", hostname=ep.get("hostname"),
                 )
-                if alert_id:
-                    await ws_manager.broadcast({"type": "alert", "alert_type": "agent_disconnect",
-                                                 "hostname": ep.get("hostname"), "id": alert_id})
         except Exception as e:
             print(f"[SERVER] disconnect watcher error: {e}")
         await asyncio.sleep(60)
@@ -144,10 +192,7 @@ async def _alert_blocklist_edit(action: str, rule_type: str, rule_value: str, ad
     per rule, so a burst of edits doesn't flood the Alerts page) plus a
     live push so it shows up without a manual refresh."""
     msg = f"{added_by} {action} {rule_type} rule: {rule_value}"
-    alert_id = db.create_alert("blocklist_edit", msg, severity="low", dedupe_minutes=2)
-    if alert_id:
-        await ws_manager.broadcast({"type": "alert", "alert_type": "blocklist_edit",
-                                     "message": msg, "id": alert_id})
+    await _fire_alert("blocklist_edit", msg, severity="low", dedupe_minutes=2)
 
 
 @app.post("/api/blocklist", tags=["Blocklist"], status_code=201)
@@ -310,6 +355,13 @@ async def receive_log(payload: dict, request: Request, _auth: bool = Depends(ver
     extension. Saves to SQLite, updates endpoint record, and pushes
     high-severity events to the dashboard via WebSocket.
     """
+    # Rate-limit per source before doing any real work -- keyed on whatever
+    # identifies the sender best (hostname, falling back to the raw IP/UA
+    # combo to-server.py's auth grace-period warnings already key on).
+    _rl_key = payload.get("endpoint_hostname") or (request.client.host if request.client else "unknown")
+    if not _check_ingest_rate_limit(_rl_key):
+        raise HTTPException(429, f"Rate limit exceeded ({INGEST_RATE_LIMIT}/sec) for {_rl_key}")
+
     # Normalise event field
     event_type = payload.get("event", payload.get("event_type", "unknown"))
     blocked    = bool(payload.get("blocked", False))
@@ -369,14 +421,11 @@ async def receive_log(payload: dict, request: Request, _auth: bool = Depends(ver
     # which is worth an admin's attention.
     if event_type == "blocklist_fetch_failed":
         hostname = payload.get("endpoint_hostname", "")
-        alert_id = db.create_alert(
+        await _fire_alert(
             "blocklist_fetch_failure",
             f"{hostname or reported_ip} failed to fetch the blocklist: {payload.get('note', 'unknown error')}",
             severity="high", hostname=hostname, dedupe_minutes=30,
         )
-        if alert_id:
-            await ws_manager.broadcast({"type": "alert", "alert_type": "blocklist_fetch_failure",
-                                         "hostname": hostname, "id": alert_id})
 
     # after-hours: insert_event() already computed & stored this per-event
     # (see database.py's is_after_hours) -- here we just turn it into a
@@ -384,14 +433,11 @@ async def receive_log(payload: dict, request: Request, _auth: bool = Depends(ver
     # looking at the After Hours page to notice.
     if payload.get("blocked") and db.is_after_hours(payload.get("timestamp_iso", "")):
         hostname = payload.get("endpoint_hostname", "")
-        alert_id = db.create_alert(
+        await _fire_alert(
             "after_hours_browsing",
             f"{hostname or reported_ip} was blocked browsing {payload.get('host', '')} outside office hours",
             severity="medium", hostname=hostname, dedupe_minutes=60,
         )
-        if alert_id:
-            await ws_manager.broadcast({"type": "alert", "alert_type": "after_hours_browsing",
-                                         "hostname": hostname, "id": alert_id})
 
     return {"received": True}
 
