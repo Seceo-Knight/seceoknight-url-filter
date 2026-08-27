@@ -231,11 +231,20 @@ def list_blocklist(active_only: bool = True, _auth: bool = Depends(verify_api_ke
 
 
 async def _alert_blocklist_edit(action: str, rule_type: str, rule_value: str, added_by: str = "admin"):
-    """Every blocklist mutation gets a low-noise alert (dedup'd per type, not
-    per rule, so a burst of edits doesn't flood the Alerts page) plus a
-    live push so it shows up without a manual refresh."""
+    """Every blocklist mutation gets a low-noise alert plus a live push so it
+    shows up without a manual refresh. No dedup here -- unlike something
+    like agent_disconnect (the same underlying condition repeating every
+    background check until it's fixed), each blocklist edit is a distinct,
+    deliberate admin action. The alerts table has no per-rule identity in
+    its dedup key (just alert_type + hostname, and hostname is always None
+    here), so a 2-minute dedup window was silently swallowing every edit
+    after the first one made within 2 minutes of another -- add rule A,
+    then remove rule B 30 seconds later, and the removal's alert never
+    appeared. Each edit is already its own row in blocklist_history for a
+    full audit trail regardless, so there's no real spam risk in also
+    giving each one its own alert."""
     msg = f"{added_by} {action} {rule_type} rule: {rule_value}"
-    await _fire_alert("blocklist_edit", msg, severity="low", dedupe_minutes=2)
+    await _fire_alert("blocklist_edit", msg, severity="low", dedupe_minutes=0)
 
 
 @app.post("/api/blocklist", tags=["Blocklist"], status_code=201)
