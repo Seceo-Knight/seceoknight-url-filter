@@ -7,8 +7,23 @@ Tables: events, blocklist, endpoints
 import sqlite3
 import os
 import time
+import json
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo   # stdlib since Python 3.9 -- no extra dependency
+except ImportError:
+    ZoneInfo = None
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "seceoknight.db")
+
+DEFAULT_OFFICE_HOURS = {
+    "enabled":  False,   # opt-in -- nothing changes until an admin configures this
+    "timezone": "Asia/Kolkata",
+    "days":     {"mon": True, "tue": True, "wed": True, "thu": True,
+                 "fri": True, "sat": False, "sun": False},
+    "ranges":   [{"start": "09:00", "end": "18:00"}],
+}
+_WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 # An endpoint is considered "active" only if it has sent a heartbeat or real
 # traffic within this window. Heartbeats fire every 60s (see to-server.py),
@@ -69,6 +84,13 @@ def init_db():
         cur.execute("ALTER TABLE events ADD COLUMN endpoint_hostname TEXT DEFAULT ''")
     if "quarantine_path" not in existing_cols:
         cur.execute("ALTER TABLE events ADD COLUMN quarantine_path TEXT DEFAULT ''")
+    if "after_hours" not in existing_cols:
+        # Computed once at ingest time from whatever the office-hours config
+        # was at that moment (see is_after_hours()) -- NOT recalculated
+        # retroactively if the config changes later, same tradeoff every
+        # similar tool makes since recomputing tz-aware status for the full
+        # history on every settings change doesn't scale.
+        cur.execute("ALTER TABLE events ADD COLUMN after_hours INTEGER DEFAULT 0")
 
     # ── Blocklist ─────────────────────────────────────────────────────────────
     cur.execute("""
@@ -140,6 +162,15 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(resolved)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_created  ON alerts(created_at)")
 
+    # ── Settings (generic key/value, JSON-encoded values) ────────────────────
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT,
+            updated_at  TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     # ── Endpoints ─────────────────────────────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS endpoints (
@@ -171,13 +202,13 @@ def insert_event(data: dict):
                  client_ip, client_port,
                  host, url, method, blocked, block_type, block_rule,
                  ai_score, ai_model, malware_family, threat_level,
-                 user_agent, quarantine_path, raw_log)
+                 user_agent, quarantine_path, raw_log, after_hours)
             VALUES
                 (:timestamp, :timestamp_iso, :event_type, :endpoint_ip, :endpoint_hostname,
                  :client_ip, :client_port,
                  :host, :url, :method, :blocked, :block_type, :block_rule,
                  :ai_score, :ai_model, :malware_family, :threat_level,
-                 :user_agent, :quarantine_path, :raw_log)
+                 :user_agent, :quarantine_path, :raw_log, :after_hours)
         """, {
             "timestamp":         data.get("timestamp", time.time()),
             "timestamp_iso":     data.get("timestamp_iso", ""),
@@ -199,6 +230,7 @@ def insert_event(data: dict):
             "user_agent":        data.get("user_agent", ""),
             "quarantine_path":   data.get("quarantine_path", ""),
             "raw_log":           data.get("raw_log", ""),
+            "after_hours":       1 if is_after_hours(data.get("timestamp_iso", "")) else 0,
         })
         conn.commit()
     finally:
@@ -481,6 +513,111 @@ def list_agent_configs():
     try:
         rows = conn.execute("SELECT hostname, mode, updated_at, updated_by FROM agent_config").fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_setting(key, default=None):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row["value"])
+        except (TypeError, ValueError):
+            return default
+    finally:
+        conn.close()
+
+
+def set_setting(key, value):
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+        """, (key, json.dumps(value)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_office_hours():
+    stored = get_setting("office_hours")
+    if not stored:
+        return dict(DEFAULT_OFFICE_HOURS)
+    # Merge over defaults so a config saved before a new field existed still
+    # works instead of KeyError-ing somewhere downstream.
+    merged = dict(DEFAULT_OFFICE_HOURS)
+    merged.update(stored)
+    return merged
+
+
+def set_office_hours(config: dict):
+    set_setting("office_hours", config)
+
+
+def is_after_hours(timestamp_iso: str, config: dict = None) -> bool:
+    """timestamp_iso is the naive-UTC 'YYYY-MM-DDTHH:MM:SS' agent.py writes
+    (see the timestamp-display bug fixed in the dashboard for the same
+    naive-UTC issue). Returns False (never after-hours) if office hours
+    aren't configured/enabled, or if zoneinfo/tz data isn't available --
+    fails open rather than mislabeling everything as after-hours."""
+    if not timestamp_iso or ZoneInfo is None:
+        return False
+    if config is None:
+        config = get_office_hours()
+    if not config.get("enabled"):
+        return False
+    try:
+        naive = datetime.strptime(timestamp_iso.replace(" ", "T")[:19], "%Y-%m-%dT%H:%M:%S")
+        local = naive.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo(config.get("timezone", "UTC")))
+    except Exception:
+        return False
+
+    day_key = _WEEKDAY_KEYS[local.weekday()]
+    if not config.get("days", {}).get(day_key, False):
+        return True   # this day isn't a configured working day at all -> after hours
+
+    now_minutes = local.hour * 60 + local.minute
+    for rng in config.get("ranges", []):
+        try:
+            sh, sm = map(int, rng["start"].split(":"))
+            eh, em = map(int, rng["end"].split(":"))
+        except Exception:
+            continue
+        if sh * 60 + sm <= now_minutes <= eh * 60 + em:
+            return False   # inside at least one configured range -> within hours
+    return True
+
+
+def get_after_hours_stats(days: int = 7):
+    """Aggregate after-hours events over the last N days, with a per-endpoint
+    breakdown -- powers the dedicated After Hours page."""
+    conn = get_connection()
+    try:
+        total = conn.execute(f"""
+            SELECT COUNT(*) FROM events
+            WHERE after_hours=1 AND timestamp >= strftime('%s', 'now', '-{int(days)} days')
+        """).fetchone()[0]
+        by_endpoint = conn.execute(f"""
+            SELECT endpoint_hostname AS hostname, endpoint_ip AS ip, COUNT(*) AS cnt
+            FROM events
+            WHERE after_hours=1 AND timestamp >= strftime('%s', 'now', '-{int(days)} days')
+            GROUP BY endpoint_hostname, endpoint_ip ORDER BY cnt DESC LIMIT 50
+        """).fetchall()
+        top_hosts = conn.execute(f"""
+            SELECT host, COUNT(*) AS cnt FROM events
+            WHERE after_hours=1 AND host != '' AND timestamp >= strftime('%s', 'now', '-{int(days)} days')
+            GROUP BY host ORDER BY cnt DESC LIMIT 15
+        """).fetchall()
+        return {
+            "days": days,
+            "total_after_hours_events": total,
+            "by_endpoint": [dict(r) for r in by_endpoint],
+            "top_hosts": [dict(r) for r in top_hosts],
+        }
     finally:
         conn.close()
 

@@ -271,6 +271,34 @@ def put_resolve_alert(alert_id: int, resolved_by: str = "admin", _auth: bool = D
     return {"message": f"Alert {alert_id} resolved"}
 
 
+# ── After-hours detection ──────────────────────────────────────────────────
+# Office hours are opt-in (disabled by default -- see DEFAULT_OFFICE_HOURS in
+# database.py) so turning on this feature never silently starts flagging
+# traffic until an admin deliberately configures it.
+
+class OfficeHoursConfig(BaseModel):
+    enabled:  bool
+    timezone: str = "Asia/Kolkata"
+    days:     dict
+    ranges:   List[dict]
+
+
+@app.get("/api/settings/office-hours", tags=["Settings"])
+def get_office_hours_setting(_auth: bool = Depends(verify_api_key)):
+    return db.get_office_hours()
+
+
+@app.put("/api/settings/office-hours", tags=["Settings"])
+def put_office_hours_setting(config: OfficeHoursConfig, _auth: bool = Depends(verify_api_key)):
+    db.set_office_hours(config.model_dump())
+    return {"message": "Office hours saved"}
+
+
+@app.get("/api/logs/after-hours", tags=["Logs"])
+def get_after_hours_logs(days: int = 7, _auth: bool = Depends(verify_api_key)):
+    return db.get_after_hours_stats(days=days)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LOG RECEIVER  — called by to-server.py on every endpoint
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -348,6 +376,21 @@ async def receive_log(payload: dict, request: Request, _auth: bool = Depends(ver
         )
         if alert_id:
             await ws_manager.broadcast({"type": "alert", "alert_type": "blocklist_fetch_failure",
+                                         "hostname": hostname, "id": alert_id})
+
+    # after-hours: insert_event() already computed & stored this per-event
+    # (see database.py's is_after_hours) -- here we just turn it into a
+    # (deduped, per-hostname) alert so it doesn't require anyone to go
+    # looking at the After Hours page to notice.
+    if payload.get("blocked") and db.is_after_hours(payload.get("timestamp_iso", "")):
+        hostname = payload.get("endpoint_hostname", "")
+        alert_id = db.create_alert(
+            "after_hours_browsing",
+            f"{hostname or reported_ip} was blocked browsing {payload.get('host', '')} outside office hours",
+            severity="medium", hostname=hostname, dedupe_minutes=60,
+        )
+        if alert_id:
+            await ws_manager.broadcast({"type": "alert", "alert_type": "after_hours_browsing",
                                          "hostname": hostname, "id": alert_id})
 
     return {"received": True}
