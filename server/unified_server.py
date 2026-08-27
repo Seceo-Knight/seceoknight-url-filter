@@ -114,7 +114,7 @@ def list_blocklist(active_only: bool = True, _auth: bool = Depends(verify_api_ke
 
 @app.post("/api/blocklist", tags=["Blocklist"], status_code=201)
 def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_api_key)):
-    valid_types = {"host", "prefix", "regex", "vid"}
+    valid_types = {"host", "prefix", "regex", "vid", "channel"}
     if rule.rule_type not in valid_types:
         raise HTTPException(400, f"rule_type must be one of {valid_types}")
     if not rule.rule_value.strip():

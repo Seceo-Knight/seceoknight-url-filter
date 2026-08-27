@@ -58,6 +58,7 @@ RETRY_BACKOFF    = 1.5
 
 SUSPICIOUS_CDN_HOSTS = ("googlevideo.com", "ytimg.com")
 MAX_LOG_BYTES = 20 * 1024 * 1024   # rotate (truncate) LOG_PATH before it grows past this
+HANDLE_CACHE_CAP = 500   # bounded LRU-ish cap for the passively-learned @handle -> UC id map
 # -----------------------------------------------------------------------------
 
 
@@ -79,8 +80,11 @@ class VideoBlockerSafe:
         self.counters = {
             "blocked_watch": 0, "blocked_cdn_referer": 0, "blocked_api": 0,
             "blocked_host": 0,  "blocked_prefix": 0,      "blocked_regex": 0,
+            "blocked_channel": 0,
             "allowed": 0,
         }
+        self.block_channels = set()   # UC ids and/or "@handle" strings, from `channel:` rules
+        self.handle_to_uc   = {}      # passively learned "@handle" -> "UC..." (see _learn_handle_from_browse)
         self._lock           = threading.Lock()
         self._last_load_time = 0
 
@@ -153,7 +157,7 @@ class VideoBlockerSafe:
                         self._last_modified_header = lm
                     content = resp.read().decode("utf-8", errors="ignore")
 
-                new_vids, new_prefixes, new_hosts = set(), [], set()
+                new_vids, new_prefixes, new_hosts, new_channels = set(), [], set(), set()
                 for raw in content.splitlines():
                     line = raw.strip()
                     if not line or line.startswith("#"):
@@ -162,6 +166,10 @@ class VideoBlockerSafe:
                         vid = line.split(":", 1)[1].strip()
                         if vid:
                             new_vids.add(vid)
+                    elif line.startswith("channel:"):
+                        chan = line.split(":", 1)[1].strip()
+                        if chan:
+                            new_channels.add(chan)
                     elif line.startswith("re:"):
                         try:
                             cre = re.compile(line.split(":", 1)[1].strip())
@@ -178,10 +186,12 @@ class VideoBlockerSafe:
                     self.block_vids     = new_vids
                     self.block_prefixes = new_prefixes
                     self.block_hosts    = new_hosts
+                    self.block_channels = new_channels
 
                 ctx.log.info(
                     f"agent: blocklist loaded -- vids={len(new_vids)} "
-                    f"prefixes={len(new_prefixes)} hosts={len(new_hosts)}"
+                    f"prefixes={len(new_prefixes)} hosts={len(new_hosts)} "
+                    f"channels={len(new_channels)}"
                 )
                 return
 
@@ -308,6 +318,26 @@ class VideoBlockerSafe:
     def _is_watch_path(self, path: str):
         return path == "/watch" or path.startswith("/watch/") or path.startswith("/watch?")
 
+    # -- Channel blocking helper -------------------------------------------------
+    # `value` can be a UC channel id (as seen in a youtubei API body's
+    # "channelId" field, or in a /channel/UC... URL) or an "@handle" (as seen
+    # in a /@handle URL). A channel: rule is written as either form -- match
+    # directly first, then fall back to the passively-learned handle -> UC
+    # mapping so a `channel:@handle` rule still catches API calls that only
+    # carry the UC id (which is what YouTube's internal API almost always
+    # uses, regardless of what the user typed in the address bar).
+
+    def _is_channel_blocked(self, value: str) -> bool:
+        if not value:
+            return False
+        if value in self.block_channels:
+            return True
+        if value.startswith("UC"):
+            for handle, uc in list(self.handle_to_uc.items()):
+                if uc == value and handle in self.block_channels:
+                    return True
+        return False
+
     # -- Main request handler --------------------------------------------------
 
     def request(self, flow: http.HTTPFlow):
@@ -364,26 +394,47 @@ class VideoBlockerSafe:
                 self._blocked_response(flow, reason=f"Video {vid} is blocked")
                 return
 
-        # 2) YouTube internal API -- block by video ID in request body
+        # 1b) YouTube channel page -- block by channel ID or @handle
+        if host.endswith("youtube.com") and (path.startswith("/@") or path.startswith("/channel/")):
+            channel_key = None
+            if path.startswith("/@"):
+                # path is like /@mkbhd or /@mkbhd/videos -- take just the handle
+                channel_key = "@" + path[2:].split("/", 1)[0]
+            else:
+                channel_key = path[len("/channel/"):].split("/", 1)[0]
+            if channel_key and self._is_channel_blocked(channel_key):
+                with self._lock:
+                    self.counters["blocked_channel"] += 1
+                self._emit_log(flow, "blocked_channel", blocked=True,
+                               extra={"block_type": "channel", "matched_channel": channel_key})
+                self._blocked_response(flow, reason=f"Channel {channel_key} is blocked")
+                return
+
+        # 2) YouTube internal API -- block by video ID or channel ID in request body
         if host.endswith("youtube.com") and (
             "/youtubei/v1/player" in path or "/youtubei/v1/next" in path
         ):
             try:
                 if req.content:
-                    body      = req.content.decode("utf-8", errors="ignore")
-                    found_vid = None
-                    ctype     = req.headers.get("content-type", "")
+                    body          = req.content.decode("utf-8", errors="ignore")
+                    found_vid     = None
+                    found_channel = None
+                    ctype         = req.headers.get("content-type", "")
                     if "application/json" in ctype:
                         try:
                             obj   = json.loads(body)
                             stack = [obj]
-                            while stack and not found_vid:
+                            while stack and not found_vid and not found_channel:
                                 node = stack.pop()
                                 if isinstance(node, dict):
                                     for k, v in node.items():
                                         if k == "videoId" and isinstance(v, str) \
                                                 and v in self.block_vids:
                                             found_vid = v
+                                            break
+                                        if k == "channelId" and isinstance(v, str) \
+                                                and self._is_channel_blocked(v):
+                                            found_channel = v
                                             break
                                         stack.append(v)
                                 elif isinstance(node, list):
@@ -396,6 +447,14 @@ class VideoBlockerSafe:
                                f'"videoId": "{vid}"' in body:
                                 found_vid = vid
                                 break
+                    if not found_vid and not found_channel:
+                        for chan in self.block_channels:
+                            if chan.startswith("UC") and (
+                                f'"channelId":"{chan}"' in body or
+                                f'"channelId": "{chan}"' in body
+                            ):
+                                found_channel = chan
+                                break
                     if found_vid:
                         with self._lock:
                             self.counters["blocked_api"] += 1
@@ -403,6 +462,14 @@ class VideoBlockerSafe:
                                        extra={"block_type": "youtube_api",
                                               "matched_vid": found_vid})
                         self._blocked_response(flow, reason=f"API call for {found_vid} blocked")
+                        return
+                    if found_channel:
+                        with self._lock:
+                            self.counters["blocked_channel"] += 1
+                        self._emit_log(flow, "blocked_channel", blocked=True,
+                                       extra={"block_type": "channel_api",
+                                              "matched_channel": found_channel})
+                        self._blocked_response(flow, reason=f"Channel {found_channel} is blocked")
                         return
             except Exception as e:
                 ctx.log.debug(f"agent: API parse failed: {e}")
@@ -480,11 +547,55 @@ class VideoBlockerSafe:
         parsed = urlparse(flow.request.pretty_url)
         if parsed.path == "/__blocker_stats":
             stats = {"counts": self.counters,
-                     "blocked_vids": sorted(list(self.block_vids))}
+                     "blocked_vids": sorted(list(self.block_vids)),
+                     "blocked_channels": sorted(list(self.block_channels))}
             flow.response = make_response(
                 200, json.dumps(stats, indent=2).encode(),
                 {"Content-Type": "application/json"}
             )
+            return
+
+        # Passively learn @handle -> UC channel-id mappings from YouTube's
+        # /browse API responses (fired when a channel page loads). This is
+        # what lets a `channel:@handle` rule catch blocking via the
+        # youtubei API body, which carries the UC id, not the handle --
+        # YouTube's internal API works in UC ids almost everywhere.
+        try:
+            host = (parsed.hostname or "").lower()
+            if host.endswith("youtube.com") and "/youtubei/v1/browse" in parsed.path \
+                    and flow.response is not None and flow.response.content:
+                self._learn_handle_from_browse(flow)
+        except Exception as e:
+            ctx.log.debug(f"agent: handle-learning failed: {e}")
+
+    def _learn_handle_from_browse(self, flow):
+        if len(self.handle_to_uc) >= HANDLE_CACHE_CAP:
+            return
+        try:
+            body = flow.response.content.decode("utf-8", errors="ignore")
+            obj  = json.loads(body)
+        except Exception:
+            return
+
+        uc_id, handle = None, None
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                cmr = node.get("channelMetadataRenderer")
+                if isinstance(cmr, dict):
+                    uc_id = cmr.get("externalId") or uc_id
+                    vanity = cmr.get("vanityChannelUrl") or ""
+                    if "/@" in vanity:
+                        handle = "@" + vanity.split("/@", 1)[1].strip("/")
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+
+        if uc_id and handle:
+            with self._lock:
+                self.handle_to_uc[handle] = uc_id
+            ctx.log.debug(f"agent: learned channel mapping {handle} -> {uc_id}")
 
 
 addons = [VideoBlockerSafe()]

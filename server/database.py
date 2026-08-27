@@ -286,6 +286,8 @@ def get_blocklist_text():
             rtype, rval = row["rule_type"], row["rule_value"]
             if rtype == "vid":
                 lines.append(f"vid:{rval}")
+            elif rtype == "channel":
+                lines.append(f"channel:{rval}")
             elif rtype == "regex":
                 lines.append(f"re:{rval}")
             elif rtype in ("host", "prefix"):
@@ -306,6 +308,8 @@ def _parse_blocklist_text(text):
             continue
         if line.startswith("vid:"):
             pairs.append(("vid", line.split(":", 1)[1].strip()))
+        elif line.startswith("channel:"):
+            pairs.append(("channel", line.split(":", 1)[1].strip()))
         elif line.startswith("re:"):
             pairs.append(("regex", line.split(":", 1)[1].strip()))
         elif "/" in line:
