@@ -472,6 +472,51 @@ Or check from your SIEM dashboard → **Endpoint Monitor** tab.
 
 ---
 
+## Optional — Per-Machine Security Tokens
+
+**You can skip this entirely.** Every endpoint already works with one shared API key that
+gets built into `to-server.py` automatically — nothing in this section is required to get
+up and running, and skipping it changes nothing about how the system works.
+
+**What this is:** an extra, individual ID for one specific machine, on top of the shared
+key everyone already uses. Think of the shared key like a building's master key — it gets
+every machine in — and a per-machine token like giving one particular office its own extra
+lock. If that one machine is ever lost, stolen, or compromised, you can cancel just its
+token without having to change the master key (and re-deploy it to all 50 machines).
+
+**When you'd actually want this:** normally, never — the shared key is enough for most
+setups. Consider it only for a specific machine you're worried about individually, e.g. a
+laptop that leaves the building, or a machine you want to be able to cut off instantly
+without touching anything else.
+
+**How to set it up for one machine:**
+
+1. In the SIEM dashboard, go to **Edge Defence → Web Threat Protection → Settings** tab
+2. Find the **Per-Agent Tokens** section. Type in that machine's exact Windows hostname
+   (find it by running `hostname` in PowerShell on that machine, or look it up in the
+   **Endpoints** list in the dashboard)
+3. Click **Issue Token** — a long random code appears. Copy it now, since the dashboard
+   only shows it this one time and can't display it again later
+4. On that Windows machine, create a plain text file at exactly this path:
+   ```
+   C:\SecEoKnight\agent_token.txt
+   ```
+   and paste in only the token you copied — nothing else in the file, no quotes, no extra
+   lines
+5. Restart the logger service so it picks up the new file:
+   ```powershell
+   Restart-Service SecEoKnight-Logger
+   ```
+
+That machine now sends its own token alongside the shared key. Every other machine that
+doesn't have a token file is completely unaffected and keeps working exactly as before.
+
+**To cancel a machine's token later** (e.g. it was lost or stolen): go back to the same
+Settings tab and click **Revoke** next to that hostname. That machine will then be rejected
+by the server until someone issues it a fresh token and updates its `agent_token.txt` again.
+
+---
+
 ## Option B — Manual Setup
 
 Use this if the automatic script fails or if you prefer full control.
