@@ -18,6 +18,7 @@ import json
 import time
 import sqlite3
 import os
+import re
 import hashlib
 import asyncio
 from contextlib import asynccontextmanager
@@ -48,6 +49,26 @@ WEBHOOK_URL = os.environ.get("SECEOKNIGHT_WEBHOOK_URL", "").strip()
 # (resets on restart -- fine, this only needs to survive a few seconds).
 INGEST_RATE_LIMIT = int(os.environ.get("SECEOKNIGHT_INGEST_RATE_LIMIT", "200"))
 _ingest_rate_state: dict = {}
+
+
+# ── ReDoS guard for "regex" blocklist rules ────────────────────────────────
+# This is the PRIMARY line of defense: reject a dangerous pattern here, at
+# rule-creation time, before it's ever stored or distributed to an endpoint.
+# endpoint/agent.py has an identical copy of this check as defense in depth
+# (in case a rule ever ends up in the DB some other way) -- duplicated
+# rather than imported because agent.py runs on a completely separate
+# Windows machine with no shared Python path back to this file. See the
+# long comment above _is_catastrophic_pattern in agent.py for why this is a
+# static rejection instead of a runtime timeout (neither a thread-based
+# timeout against stdlib `re`, nor the third-party `regex` package, work in
+# this deployment -- the former doesn't actually enforce the bound, the
+# latter can't be installed into mitmproxy's frozen Windows binary).
+MAX_REGEX_PATTERN_LENGTH = 500
+_NESTED_QUANTIFIER_RE = re.compile(r'\([^()]*[+*|][^()]*\)[+*]|\([^()]*\)\s*\{\d*,\}[+*]?\s*\(')
+
+
+def _is_catastrophic_pattern(pattern_str: str) -> bool:
+    return bool(_NESTED_QUANTIFIER_RE.search(pattern_str))
 
 
 def _check_ingest_rate_limit(key: str) -> bool:
@@ -219,6 +240,24 @@ async def add_blocklist_rule(rule: BlocklistRule, _auth: bool = Depends(verify_a
         raise HTTPException(400, f"rule_type must be one of {valid_types}")
     if not rule.rule_value.strip():
         raise HTTPException(400, "rule_value cannot be empty")
+
+    if rule.rule_type == "regex":
+        pattern_str = rule.rule_value.strip()
+        if len(pattern_str) > MAX_REGEX_PATTERN_LENGTH:
+            raise HTTPException(400, f"regex pattern exceeds {MAX_REGEX_PATTERN_LENGTH} characters")
+        if _is_catastrophic_pattern(pattern_str):
+            raise HTTPException(
+                400,
+                "regex pattern rejected -- it has a nested-quantifier shape "
+                "(e.g. (a+)+, (a|a)*) that can cause catastrophic backtracking "
+                "and hang the endpoint's proxy on certain inputs. Rewrite it "
+                "to avoid a quantified group that itself contains a quantifier "
+                "or alternation.",
+            )
+        try:
+            re.compile(pattern_str)
+        except re.error as e:
+            raise HTTPException(400, f"invalid regex pattern: {e}")
 
     conn = db.get_connection()
     try:

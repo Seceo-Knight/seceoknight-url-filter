@@ -14,11 +14,7 @@ from mitmproxy import http, ctx
 from urllib.parse import urlparse, parse_qs, quote as _urlquote
 import time
 import os
-# `regex` (PyPI, not stdlib `re`) is used for blocklist regex rules
-# specifically -- see the ReDoS-guard comment below for why stdlib `re`
-# can't safely be time-boxed here. Install alongside mitmproxy/requests:
-# pip install regex
-import regex
+import re
 import json
 import socket
 import urllib.request
@@ -68,35 +64,49 @@ SUSPICIOUS_CDN_HOSTS = ("googlevideo.com", "ytimg.com")
 MAX_LOG_BYTES = 20 * 1024 * 1024   # rotate (truncate) LOG_PATH before it grows past this
 HANDLE_CACHE_CAP = 500   # bounded LRU-ish cap for the passively-learned @handle -> UC id map
 MAX_REGEX_PATTERN_LENGTH = 500   # ReDoS guard #1: reject overlong patterns outright
-REGEX_TIMEOUT_S = 0.1            # ReDoS guard #2: cap how long any single match attempt can run
 
-# Why the `regex` package instead of stdlib `re` + a thread/timeout wrapper:
-# tried that first, and it doesn't actually work -- CPython's `re` engine
-# holds the GIL for the *entire* duration of a single match() call on a
-# pathological pattern (it's a tight C loop with no periodic GIL release),
-# so a second Python thread trying to enforce a timeout is starved right
-# along with everything else and never gets to run. Confirmed directly:
-# a `(a+)+$`-style pattern blocked a `future.result(timeout=0.1)` call for
-# 14+ seconds despite the 100ms timeout, because the waiting thread simply
-# couldn't get the GIL back. The `regex` module's own `timeout=` parameter
-# checks elapsed time from *inside* its matching loop, so it actually
-# enforces the bound -- verified the same pattern correctly raises
-# TimeoutError at ~100ms with `regex`, every time.
+# ReDoS guard #2: reject patterns with a nested-quantifier shape at load
+# time, instead of trying to time-box the match at runtime.
 #
+# Two runtime approaches were tried and rejected before landing on this one:
+#   1. stdlib `re` + a ThreadPoolExecutor timeout -- doesn't work. CPython's
+#      `re` engine holds the GIL for the *entire* duration of a single
+#      match() call on a pathological pattern (a tight C loop with no
+#      periodic GIL release), so a second thread trying to enforce a
+#      timeout is starved right along with everything else and never gets
+#      to run. Confirmed directly: a `(a+)+$`-style pattern blocked a
+#      `future.result(timeout=0.1)` call for 14+ seconds despite the 100ms
+#      timeout.
+#   2. the third-party `regex` package, which DOES have a working native
+#      timeout= parameter -- but this agent runs as a mitmdump addon
+#      loaded by mitmproxy's official Windows installer, and that
+#      installer's Python environment is frozen at release: you cannot pip
+#      install additional packages into it. Shipping `import regex` here
+#      would crash the proxy service on every endpoint the moment it
+#      updated, since the module would simply never be present at runtime.
+#
+# So instead of matching-time protection, the fix is at rule-creation time:
+# reject the regex shapes that actually cause catastrophic backtracking
+# (nested/adjacent quantifiers over the same or overlapping content, e.g.
+# `(a+)+`, `(a*)*`, `(a|a)*`, `(.*)*`) before the pattern is ever compiled
+# or distributed to an endpoint. This is enforced server-side in
+# unified_server.py's add_blocklist_rule (so a bad pattern is rejected
+# before it's even stored) AND here in _load_blocklist (so a pattern that
+# somehow ended up in the DB some other way -- e.g. inserted directly --
+# still gets skipped rather than loaded and matched against). It won't
+# catch every conceivable catastrophic shape, but it catches the shapes
+# that show up in practice, with zero runtime cost and no new dependency.
+_NESTED_QUANTIFIER_RE = re.compile(r'\([^()]*[+*|][^()]*\)[+*]|\([^()]*\)\s*\{\d*,\}[+*]?\s*\(')
+
+
+def _is_catastrophic_pattern(pattern_str: str) -> bool:
+    return bool(_NESTED_QUANTIFIER_RE.search(pattern_str))
+
+
 # Headers stripped before anything gets written to LOG_PATH / shipped to the
 # server -- session cookies and auth tokens have no reason to leave the
 # endpoint just because a request happened to get logged.
 REDACTED_HEADERS = {"cookie", "authorization", "x-api-key", "proxy-authorization"}
-
-
-def _regex_search_with_timeout(pattern_compiled, text, timeout_s=REGEX_TIMEOUT_S):
-    try:
-        return pattern_compiled.search(text, timeout=timeout_s)
-    except TimeoutError:
-        ctx.log.warn(f"agent: regex rule timed out (>{int(timeout_s*1000)}ms) on {pattern_compiled.pattern!r} -- treating as no-match")
-        return None
-    except Exception:
-        return None
 
 # Injected into youtube.com HTML pages (see _maybe_inject_overlay). YouTube is
 # a single-page app: clicking a blocked video from search results, the
@@ -310,11 +320,13 @@ class VideoBlockerSafe:
                         pattern_str = line.split(":", 1)[1].strip()
                         if len(pattern_str) > MAX_REGEX_PATTERN_LENGTH:
                             ctx.log.warn(f"agent: regex rule rejected -- exceeds {MAX_REGEX_PATTERN_LENGTH} chars: {pattern_str[:60]}...")
+                        elif _is_catastrophic_pattern(pattern_str):
+                            ctx.log.warn(f"agent: regex rule rejected -- nested-quantifier (ReDoS) shape: {pattern_str[:60]}...")
                         else:
                             try:
-                                cre = regex.compile(pattern_str)
+                                cre = re.compile(pattern_str)
                                 new_prefixes.append(("__regex__", cre))
-                            except regex.error:
+                            except re.error:
                                 ctx.log.warn(f"agent: invalid regex: {line}")
                     elif "/" in line:
                         host_part, path_part = line.split("/", 1)
@@ -676,7 +688,7 @@ class VideoBlockerSafe:
             if entry[0] == "__regex__":
                 cre = entry[1]
                 try:
-                    if _regex_search_with_timeout(cre, req.pretty_url):
+                    if cre.search(req.pretty_url):
                         with self._lock:
                             self.counters["blocked_regex"] += 1
                         self._emit_log(flow, "blocked_regex", blocked=True,
@@ -684,7 +696,7 @@ class VideoBlockerSafe:
                                               "block_rule": cre.pattern})
                         self._blocked_response(flow, reason="Regex rule matched")
                         return
-                except regex.error:
+                except re.error:
                     pass
             else:
                 host_part, path_prefix = entry

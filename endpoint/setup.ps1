@@ -118,11 +118,7 @@ if (-not $PythonExe) {
 Write-Ok "Python: $PythonExe"
 
 Write-Host "  Installing Python packages..." -ForegroundColor Yellow
-# `regex` (not stdlib `re`) backs agent.py's ReDoS guard for blocklist regex
-# rules -- it has a native match-level timeout that stdlib `re` cannot
-# support safely (a thread-based timeout can't interrupt `re`'s C loop once
-# it's holding the GIL on a catastrophic pattern).
-& $PythonExe -m pip install requests regex --quiet --disable-pip-version-check
+& $PythonExe -m pip install requests --quiet --disable-pip-version-check
 # Install watchdog + pillow to shared folder so LocalSystem service can access them
 New-Item -ItemType Directory -Path "$BaseDir\pylibs" -Force | Out-Null
 & $PythonExe -m pip install watchdog pillow --target "$BaseDir\pylibs" --quiet --disable-pip-version-check
