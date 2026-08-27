@@ -20,6 +20,7 @@ import socket
 import urllib.request
 import urllib.error
 import threading
+import hashlib
 
 
 def _get_endpoint_ip():
@@ -40,8 +41,11 @@ ENDPOINT_HOSTNAME = socket.gethostname()
 # -- Configuration -------------------------------------------------------------
 SERVER_IP    = "192.168.1.63"          # <-- Change to your security server IP
 SERVER_PORT  = 5001
-BLOCKLIST_URL     = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
-AGENT_CONFIG_URL  = f"http://{SERVER_IP}:{SERVER_PORT}/api/agents/config"
+BLOCKLIST_URL       = f"http://{SERVER_IP}:{SERVER_PORT}/blocklist"
+AGENT_CONFIG_URL    = f"http://{SERVER_IP}:{SERVER_PORT}/api/agents/config"
+AGENT_UPDATE_HASH_URL     = f"http://{SERVER_IP}:{SERVER_PORT}/agent-update/hash"
+AGENT_UPDATE_DOWNLOAD_URL = f"http://{SERVER_IP}:{SERVER_PORT}/agent-update/download"
+AUTO_UPDATE_ENABLED = True   # set False on a machine to pin its current agent.py version
 
 # API key -- optional while the server is in its auth "grace period"
 # (SECEOKNIGHT_REQUIRE_API_KEY=false), required once it's flipped to true.
@@ -138,6 +142,7 @@ class VideoBlockerSafe:
         # alongside the blocklist so a change takes effect within ~30s.
         self.agent_mode              = "enforce"
         self._last_config_load_time  = 0
+        self._last_update_check_time = 0
 
         try:
             self._load_blocklist(force=True)
@@ -171,6 +176,59 @@ class VideoBlockerSafe:
                 self.agent_mode = mode
         except Exception as e:
             ctx.log.debug(f"agent: config fetch failed, keeping mode={self.agent_mode}: {e}")
+
+    # -- Self-update -------------------------------------------------------------
+    # Solves the "manual machine-by-machine PowerShell rollout" problem: this
+    # machine's own agent.py checks its SHA-256 against the server's copy
+    # every RELOAD_INTERVAL, and if they differ, downloads and overwrites
+    # itself, then exits. NSSM (AppRestartDelay, set up by setup.ps1) brings
+    # the mitmdump service back up automatically, loading the new file --
+    # no PowerShell or manual action needed on the endpoint.
+
+    def _check_for_update(self, force=False):
+        if not AUTO_UPDATE_ENABLED:
+            return
+        now = time.time()
+        if not force and (now - self._last_update_check_time) < RELOAD_INTERVAL:
+            return
+        self._last_update_check_time = now
+        try:
+            req_headers = {"User-Agent": "SecEoKnight-Agent/1.0"}
+            if API_KEY:
+                req_headers["X-API-Key"] = API_KEY
+            req = urllib.request.Request(AGENT_UPDATE_HASH_URL, headers=req_headers)
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
+                remote = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            remote_hash = remote.get("sha256", "")
+
+            with open(__file__, "rb") as f:
+                local_content = f.read()
+            local_hash = hashlib.sha256(local_content).hexdigest()
+
+            if not remote_hash or remote_hash == local_hash:
+                return   # up to date
+
+            ctx.log.info(f"agent: update available (local {local_hash[:8]} -> remote {remote_hash[:8]}), downloading")
+            dl_req = urllib.request.Request(AGENT_UPDATE_DOWNLOAD_URL, headers=req_headers)
+            with opener.open(dl_req, timeout=REQUEST_TIMEOUT) as resp:
+                new_content = resp.read()
+
+            if not new_content or len(new_content) < 1000:
+                ctx.log.warn("agent: downloaded update looks truncated -- refusing to install")
+                return
+            try:
+                compile(new_content, "agent.py", "exec")   # sanity check it's valid Python before installing
+            except SyntaxError as e:
+                ctx.log.warn(f"agent: downloaded update failed to compile -- refusing to install: {e}")
+                return
+
+            with open(__file__, "wb") as f:
+                f.write(new_content)
+            ctx.log.info("agent: update installed, restarting to load it (NSSM will bring the service back up)")
+            os._exit(0)
+        except Exception as e:
+            ctx.log.debug(f"agent: update check failed: {e}")
 
     # -- Blocklist loader ------------------------------------------------------
 
@@ -392,6 +450,7 @@ class VideoBlockerSafe:
     def request(self, flow: http.HTTPFlow):
         self._load_blocklist()      # no-op if cache is fresh
         self._load_agent_config()   # no-op if cache is fresh
+        self._check_for_update()    # no-op if cache is fresh or already up to date
 
         # disabled mode: pure passthrough -- don't block, don't even log as
         # blocked (agent still counts it as "allowed" so traffic totals stay

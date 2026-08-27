@@ -18,6 +18,7 @@ import json
 import time
 import sqlite3
 import os
+import hashlib
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
@@ -457,6 +458,36 @@ def put_agent_config(body: AgentConfigUpdate, _auth: bool = Depends(verify_api_k
         raise HTTPException(400, f"mode must be one of {sorted(db.VALID_AGENT_MODES)}")
     db.set_agent_mode(body.hostname, body.mode, body.updated_by or "admin")
     return {"message": f"{body.hostname} set to {body.mode}"}
+
+
+# ── Agent self-update ──────────────────────────────────────────────────────
+# Solves the "manual machine-by-machine PowerShell rollout" problem: every
+# deployed agent.py polls its own SHA-256 alongside the blocklist/config
+# every RELOAD_INTERVAL. If it differs from what's on this server, it
+# downloads the new copy, overwrites itself on disk, and exits -- NSSM
+# (configured with AppRestartDelay in setup.ps1) restarts the mitmdump
+# service automatically, which loads the new agent.py. No PowerShell or
+# manual per-machine action needed to ship an agent update.
+_AGENT_PY_PATH = os.path.join(os.path.dirname(__file__), "..", "endpoint", "agent.py")
+
+
+@app.get("/agent-update/hash", tags=["Agents"])
+def get_agent_update_hash(_auth: bool = Depends(verify_api_key)):
+    try:
+        with open(_AGENT_PY_PATH, "rb") as f:
+            content = f.read()
+    except FileNotFoundError:
+        raise HTTPException(500, "agent.py not found on server -- check deployment layout")
+    return {"sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
+
+
+@app.get("/agent-update/download", response_class=PlainTextResponse, tags=["Agents"])
+def download_agent_update(_auth: bool = Depends(verify_api_key)):
+    try:
+        with open(_AGENT_PY_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise HTTPException(500, "agent.py not found on server -- check deployment layout")
 
 
 @app.get("/api/my-stats", tags=["Dashboard"])
