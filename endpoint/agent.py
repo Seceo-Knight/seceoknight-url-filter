@@ -14,7 +14,11 @@ from mitmproxy import http, ctx
 from urllib.parse import urlparse, parse_qs, quote as _urlquote
 import time
 import os
-import re
+# `regex` (PyPI, not stdlib `re`) is used for blocklist regex rules
+# specifically -- see the ReDoS-guard comment below for why stdlib `re`
+# can't safely be time-boxed here. Install alongside mitmproxy/requests:
+# pip install regex
+import regex
 import json
 import socket
 import urllib.request
@@ -63,6 +67,36 @@ RETRY_BACKOFF    = 1.5
 SUSPICIOUS_CDN_HOSTS = ("googlevideo.com", "ytimg.com")
 MAX_LOG_BYTES = 20 * 1024 * 1024   # rotate (truncate) LOG_PATH before it grows past this
 HANDLE_CACHE_CAP = 500   # bounded LRU-ish cap for the passively-learned @handle -> UC id map
+MAX_REGEX_PATTERN_LENGTH = 500   # ReDoS guard #1: reject overlong patterns outright
+REGEX_TIMEOUT_S = 0.1            # ReDoS guard #2: cap how long any single match attempt can run
+
+# Why the `regex` package instead of stdlib `re` + a thread/timeout wrapper:
+# tried that first, and it doesn't actually work -- CPython's `re` engine
+# holds the GIL for the *entire* duration of a single match() call on a
+# pathological pattern (it's a tight C loop with no periodic GIL release),
+# so a second Python thread trying to enforce a timeout is starved right
+# along with everything else and never gets to run. Confirmed directly:
+# a `(a+)+$`-style pattern blocked a `future.result(timeout=0.1)` call for
+# 14+ seconds despite the 100ms timeout, because the waiting thread simply
+# couldn't get the GIL back. The `regex` module's own `timeout=` parameter
+# checks elapsed time from *inside* its matching loop, so it actually
+# enforces the bound -- verified the same pattern correctly raises
+# TimeoutError at ~100ms with `regex`, every time.
+#
+# Headers stripped before anything gets written to LOG_PATH / shipped to the
+# server -- session cookies and auth tokens have no reason to leave the
+# endpoint just because a request happened to get logged.
+REDACTED_HEADERS = {"cookie", "authorization", "x-api-key", "proxy-authorization"}
+
+
+def _regex_search_with_timeout(pattern_compiled, text, timeout_s=REGEX_TIMEOUT_S):
+    try:
+        return pattern_compiled.search(text, timeout=timeout_s)
+    except TimeoutError:
+        ctx.log.warn(f"agent: regex rule timed out (>{int(timeout_s*1000)}ms) on {pattern_compiled.pattern!r} -- treating as no-match")
+        return None
+    except Exception:
+        return None
 
 # Injected into youtube.com HTML pages (see _maybe_inject_overlay). YouTube is
 # a single-page app: clicking a blocked video from search results, the
@@ -273,11 +307,15 @@ class VideoBlockerSafe:
                         if chan:
                             new_channels.add(chan)
                     elif line.startswith("re:"):
-                        try:
-                            cre = re.compile(line.split(":", 1)[1].strip())
-                            new_prefixes.append(("__regex__", cre))
-                        except re.error:
-                            ctx.log.warn(f"agent: invalid regex: {line}")
+                        pattern_str = line.split(":", 1)[1].strip()
+                        if len(pattern_str) > MAX_REGEX_PATTERN_LENGTH:
+                            ctx.log.warn(f"agent: regex rule rejected -- exceeds {MAX_REGEX_PATTERN_LENGTH} chars: {pattern_str[:60]}...")
+                        else:
+                            try:
+                                cre = regex.compile(pattern_str)
+                                new_prefixes.append(("__regex__", cre))
+                            except regex.error:
+                                ctx.log.warn(f"agent: invalid regex: {line}")
                     elif "/" in line:
                         host_part, path_part = line.split("/", 1)
                         new_prefixes.append((host_part.strip(), "/" + path_part.strip()))
@@ -366,7 +404,9 @@ class VideoBlockerSafe:
         ip, port = self._client_addr(flow)
         headers  = {}
         try:
-            headers = dict(req.headers) if req and req.headers else {}
+            raw_headers = dict(req.headers) if req and req.headers else {}
+            headers = {k: ("[redacted]" if k.lower() in REDACTED_HEADERS else v)
+                       for k, v in raw_headers.items()}
         except Exception:
             pass
 
@@ -387,6 +427,7 @@ class VideoBlockerSafe:
             "referer":       req.headers.get("referer") if req else None,
             "blocked":       bool(blocked),
             "counters_snapshot": dict(self.counters),
+            "headers":         headers,   # already redacted -- see REDACTED_HEADERS
         }
         payload.update(extra)
         self._write_log(payload)
@@ -635,7 +676,7 @@ class VideoBlockerSafe:
             if entry[0] == "__regex__":
                 cre = entry[1]
                 try:
-                    if cre.search(req.pretty_url):
+                    if _regex_search_with_timeout(cre, req.pretty_url):
                         with self._lock:
                             self.counters["blocked_regex"] += 1
                         self._emit_log(flow, "blocked_regex", blocked=True,
@@ -643,7 +684,7 @@ class VideoBlockerSafe:
                                               "block_rule": cre.pattern})
                         self._blocked_response(flow, reason="Regex rule matched")
                         return
-                except re.error:
+                except regex.error:
                     pass
             else:
                 host_part, path_prefix = entry
