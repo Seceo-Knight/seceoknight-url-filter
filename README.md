@@ -523,7 +523,11 @@ git push
    - `SecEoKnight-Proxy` — mitmproxy traffic interceptor
    - `SecEoKnight-Logger` — log forwarder to security server
    - `SecEoKnight-Scanner` — AI malware file watcher (quarantines threats from Downloads)
-
+```
+     Restart-Service SecEoKnight-Proxy
+     Restart-Service SecEoKnight-Logger
+     Restart-Service SecEoKnight-Scanner
+```
    **No PowerShell windows to keep open.** All services:
    - Start automatically every time Windows boots
    - Run silently in the background — invisible to users
